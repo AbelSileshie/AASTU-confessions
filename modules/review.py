@@ -15,7 +15,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import alert_admins, category, fmt_ts, is_private_chat, kb, notify_author, user_lang
+from common import alert_admins, category, fmt_ts, is_private_chat, kb, notify_author, reasons_kb, user_lang
 from config import cfg
 from i18n import t
 from security import has_role, require, role_of, verify_cb
@@ -162,10 +162,7 @@ def card_kb(sub_id: int):
 
 
 def _reasons(prefix: str, item_id: int, back: tuple[str, str]):
-    rows = [[(t("en", f"reject.{r}"), prefix, f"rejr:{item_id}:{r}") for r in REJECT_REASONS[:3]],
-            [(t("en", f"reject.{r}"), prefix, f"rejr:{item_id}:{r}") for r in REJECT_REASONS[3:]],
-            [("⬅️ Back", back[0], back[1])]]
-    return kb(rows)
+    return reasons_kb(REJECT_REASONS, prefix, item_id, back, label=lambda r: t("en", f"reject.{r}"))
 
 
 def ban_kb(sub_id: int):

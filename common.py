@@ -154,9 +154,6 @@ NAV_ACTIONS = {
 }
 
 
-STAFF_LABELS = {"📋 Queue": "queue", "📊 Stats": "stats", "⚙️ Admin": "admin"}
-
-
 def nav_keyboard(lang: str, user_id: int | None = None) -> ReplyKeyboardMarkup:
     """Always-visible bottom keyboard. Staff get an extra row (Queue / Stats / Admin)."""
     rows = [[t(lang, "menu.confess"), t(lang, "menu.browse")]]
@@ -193,6 +190,17 @@ def nav_regex(only: tuple[str, ...] | None = None, exclude: tuple[str, ...] = ()
     keys = [k for k, a in NAV_ACTIONS.items() if (only is None or a in only) and a not in exclude]
     labels = {t(lang, key) for key in keys for lang in SUPPORTED}
     return "^(" + "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True)) + ")$"
+
+
+def reasons_kb(reasons: tuple[str, ...], prefix: str, item_id: int, back: tuple[str, str] | None,
+               label=lambda r: r) -> InlineKeyboardMarkup:
+    """Two rows of reject-reason buttons (`prefix`:rejr:<id>:<reason>) plus an optional Back."""
+    half = (len(reasons) + 1) // 2
+    rows = [[(label(r), prefix, f"rejr:{item_id}:{r}") for r in reasons[:half]],
+            [(label(r), prefix, f"rejr:{item_id}:{r}") for r in reasons[half:]]]
+    if back:
+        rows.append([("⬅️ Back", back[0], back[1])])
+    return kb([row for row in rows if row])
 
 
 def exit_row(lang: str, back: tuple[str, str] | None = None) -> InlineKeyboardMarkup:

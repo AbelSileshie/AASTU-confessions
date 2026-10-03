@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import json
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 import db
-from common import is_private_chat, kb, parse_int, post_link
-from config import cfg
+from common import is_private_chat, kb, parse_int, post_link, reasons_kb
 from i18n import t
-from security import has_role, require, verify_cb
+from security import require, verify_cb
 
 AD_REJECT_REASONS = ("policy", "scam", "adult", "betting", "quality", "other")
 
@@ -151,8 +150,7 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await q.answer("Cannot schedule.", show_alert=True)
     elif action == "rej":
         await q.answer()
-        rows = [[(r, "ada", f"rejr:{ad_id}:{r}") for r in AD_REJECT_REASONS[:3]], [(r, "ada", f"rejr:{ad_id}:{r}") for r in AD_REJECT_REASONS[3:]]]
-        await q.message.edit_reply_markup(reply_markup=kb(rows))
+        await q.message.edit_reply_markup(reply_markup=reasons_kb(AD_REJECT_REASONS, "ada", ad_id, None))
     elif action == "rejr":
         reason = extra if extra in AD_REJECT_REASONS else "other"
         paid = db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) in ("paid", "approved", "scheduled")

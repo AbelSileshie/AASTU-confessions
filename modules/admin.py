@@ -33,7 +33,7 @@ from ops import (
     words,
 )
 from payments import BANK_FIELDS
-from security import has_role, require, role_of, verify_cb
+from security import has_role, require, verify_cb
 
 BACK = ("⬅️ Back", "hub", "home")
 
@@ -123,7 +123,7 @@ def pkg_screen(pid: int):
     return text, kb(rows)
 
 
-def pay_screen():
+def payouts_screen():
     rows = [[(f"{'✅' if r['enabled'] else '⬜'} {BANK_FIELDS.get(r['bank'], {}).get('label', r['bank'])} …{r['account'][-4:]} · {r['holder']}",
               "hub", f"pay:{r['id']}:toggle")] for r in db.q("SELECT * FROM payout_accounts ORDER BY sort, id")]
     rows.append([("➕ Add account", "hub", "pay:add"), BACK])
@@ -300,7 +300,7 @@ async def _pay(q, context, uid, rest) -> None:
         return
     if len(rest) >= 2 and rest[0].isdigit() and rest[1] == "toggle":
         toggle("payout_accounts", int(rest[0]), uid)
-    await _render(q, pay_screen())
+    await _render(q, payouts_screen())
 
 
 async def _word(q, context, uid, rest) -> None:

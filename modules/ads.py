@@ -1,7 +1,6 @@
 """/advertise: package → text → photo → button → preview → order → pay → reference."""
 from __future__ import annotations
 
-import json
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (

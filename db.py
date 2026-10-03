@@ -4,7 +4,6 @@ All queries are parameterised. Never build SQL from user input.
 """
 from __future__ import annotations
 
-import os
 import re
 import sqlite3
 import threading
@@ -137,11 +136,3 @@ def audit(actor: int, action: str, target: str = "", detail: str = "") -> None:
         (actor, action, target, detail, now()),
     )
 
-
-def db_size_bytes() -> int:
-    if not _db_path or _db_path == ":memory:":
-        return 0
-    try:
-        return os.path.getsize(_db_path)
-    except OSError:
-        return 0

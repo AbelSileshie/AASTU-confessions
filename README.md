@@ -25,8 +25,9 @@ db.py               SQLite (WAL), migrations, helpers
 security.py         author hash, chat_ref encryption, signed callbacks, @require(role)
 textfilter.py       normalisation, link/phone/mention detection, block/risk words
 payments.py         Verify.et client + acceptance checks (shared service)
+ops.py              staff/catalog/wordlist/stats operations shared by commands and /admin menus
 common.py           shared helpers for modules
-modules/            core submit review comments staff settings catalog wordlist ads ads_admin takedown stats
+modules/            core submit review comments staff admin settings catalog wordlist ads ads_admin takedown stats
 jobs/               poster housekeeping backup
 web/server.py       aiohttp: Telegram webhook, /webhooks/verify, /healthz
 migrations/         additive SQL migrations applied on startup
@@ -63,7 +64,7 @@ them the invite link. Add receiving accounts with `/payout_accounts add telebirr
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q            # 146 tests, ~10 s
+.venv/bin/python -m pytest -q            # 176 tests, ~15 s
 .venv/bin/bandit -q -r . -x ./.venv,./tests
 .venv/bin/pip-audit
 ```
@@ -96,11 +97,36 @@ rejected (fail closed).
 Backups run nightly at 03:00 UTC to the backup channel, encrypted with `age`; see
 [deploy/backup-restore.md](deploy/backup-restore.md).
 
+## Moderation flow
+
+```
+student → DM queue (moderators, /next or 📋 Queue, atomic claim)
+        → Approve → ONE card in the admin group's 📋 Final review topic
+                    (⚠️ Flagged topic when risk words hit)
+        → first admin to press ✅ Post wins; card is edited in place → channel
+        → Reject (either stage) → 🗂 Declined topic with full text + ↩️ Restore,
+          auto-deleted after `declined_ttl_hours` (default 72)
+```
+
+Admins who approve from their own DM queue skip the second stage. Set `final_review=0` for
+single-stage (small teams). Takedown requests, hidden comments, payment issues and system
+alerts go to their own topics (🛑 Takedowns, 💰 Ads, 🔔 Alerts).
+
+**Group setup:** enable *Topics* in the admin group, give the bot *Manage topics*, then
+`⚙️ Admin → Group setup → Create topics`. Without topics everything lands in the main chat.
+
+## Admin hub
+
+Staff see an extra keyboard row: `📋 Queue · 📊 Stats · ⚙️ Admin` (admins/owner only for the last).
+`⚙️ Admin` opens inline menus for Staff (invite/promote/remove/audit), Settings, Categories,
+Packages, Payout accounts (owner), Wordlist, Ads, Group setup and Health. The slash
+commands below remain as a fast path and call the same functions (`ops.py`).
+
 ## Operator commands
 
 | Who | Commands |
 |---|---|
 | everyone | `/start` `/rules` `/delete <n>` `/lang` `/advertise` `/myads` |
 | moderator | `/next [1-5]` `/stats` `/top` `/block` `/risk` `/words` `/takedown <n> <reason>` `/shift on\|off` |
-| admin | `/settings` `/set k v` `/staff` `/unban` `/unblock` `/categories` `/packages` `/ads` `/ad_report` `/revenue` `/post_rules` `/mediakit` `/audit` |
+| admin | `/admin` `/settings` `/set k v` `/staff` `/unban` `/unblock` `/categories` `/packages` `/ads` `/ad_report` `/revenue` `/post_rules` `/mediakit` `/audit` |
 | owner | `/payout_accounts` `/export` `/import` (attach JSON) `/refunds` |

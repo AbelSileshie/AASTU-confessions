@@ -26,6 +26,3 @@ def t(lang: str | None, key: str, **kw) -> str:
     except (KeyError, IndexError):
         return template
 
-
-def reload() -> None:
-    _load.cache_clear()

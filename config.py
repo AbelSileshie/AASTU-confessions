@@ -52,7 +52,6 @@ class Env:
     verify_base_url: str
     age_recipient: str
     db_path: str
-    test_mode: bool
 
 
 def load_env(strict: bool = True) -> Env:
@@ -87,7 +86,6 @@ def load_env(strict: bool = True) -> Env:
         verify_base_url=_env("VERIFY_BASE_URL", "https://verify.et").rstrip("/"),
         age_recipient=_env("AGE_RECIPIENT", ""),
         db_path=_env("DB_PATH", "./data/confess.db"),
-        test_mode=_env("TEST_MODE", "0") == "1",
     )
 
 

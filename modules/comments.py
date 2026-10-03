@@ -265,10 +265,6 @@ async def comment_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # Connect (OP → commenter, consent-based)
 # ---------------------------------------------------------------------------
 
-def _mention(user_id: int, label: str) -> tuple[str, list[MessageEntity]]:
-    return label, [MessageEntity(MessageEntity.TEXT_MENTION, 0, len(label), user=User(id=user_id, first_name=label, is_bot=False))]
-
-
 async def _send_mention(bot, chat_id: int, template: str, target_user_id: int, **kw) -> None:
     label = "👤 Open profile"
     prefix = template.format(mention="", **kw)
