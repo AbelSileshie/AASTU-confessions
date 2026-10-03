@@ -1,0 +1,21 @@
+# secrets / local
+.env
+*.env
+!.env.example
+.venv/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.age
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# tooling
+.tmp/
+*.log
