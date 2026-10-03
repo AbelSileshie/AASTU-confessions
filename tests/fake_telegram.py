@@ -101,6 +101,9 @@ class FakeRequest(BaseRequest):
                          read_timeout=None, write_timeout=None, connect_timeout=None, pool_timeout=None) -> tuple[int, bytes]:
         api = url.rsplit("/", 1)[-1]
         params = dict(request_data.parameters) if request_data else {}
+        if request_data and request_data.multipart_data:
+            for field, item in request_data.multipart_data.items():
+                params.setdefault("filename", getattr(item, "filename", None) or (item[0] if isinstance(item, tuple) else None))
         self.raw_calls.append((api, params))
         chat_id = _int(params.get("chat_id"))
         markup = params.get("reply_markup")

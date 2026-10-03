@@ -120,7 +120,7 @@ class Harness:
     def context(self, job_data: dict | None = None) -> CallbackContext:
         ctx = CallbackContext(self.app)
         if job_data is not None:
-            ctx._job = SimpleNamespace(data=job_data)  # noqa: SLF001
+            ctx.job = SimpleNamespace(data=job_data, name='test')
         return ctx
 
     async def run_job(self, job_fn, data: dict | None = None):
