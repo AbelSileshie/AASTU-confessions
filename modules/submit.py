@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from telegram import Update
 from telegram.ext import (
@@ -55,7 +55,7 @@ def gate(author: str, now: int) -> tuple[str, dict] | None:
     if not cfg("submissions_open", True):
         return "submit.closed", {}
     hours = cfg("open_hours", "")
-    if not _hours_open(hours, datetime.utcfromtimestamp(now).hour):
+    if not _hours_open(hours, datetime.fromtimestamp(now, tz=timezone.utc).hour):
         return "submit.closed_hours", {"hours": hours}
     soft_cap = cfg("queue_soft_cap", 0)
     if soft_cap and db.scalar("SELECT count(*) FROM submissions") >= soft_cap:

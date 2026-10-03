@@ -16,7 +16,7 @@ from telegram.ext import ContextTypes
 import db
 from config import cfg
 from i18n import t
-from security import author_hash, decrypt_ref, encrypt_ref, sign_cb
+from security import author_hash, decrypt_ref, encrypt_ref, is_private_chat, sign_cb  # noqa: F401 - re-exported
 
 log = logging.getLogger(__name__)
 

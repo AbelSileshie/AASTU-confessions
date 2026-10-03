@@ -1,0 +1,10 @@
+confess.yourdomain.et {
+    encode gzip
+    @allowed path /tg/* /webhooks/* /healthz
+    handle @allowed {
+        reverse_proxy 127.0.0.1:8081
+    }
+    handle {
+        respond "ok" 200
+    }
+}

@@ -12,7 +12,6 @@ MODULES = (
     "modules.wordlist",
     "modules.ads",
     "modules.ads_admin",
-    "modules.payments",
     "modules.takedown",
     "modules.stats",
 )

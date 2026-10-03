@@ -1,0 +1,32 @@
+[Unit]
+Description=AASTU Confessions bot
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+User=confessbot
+Group=confessbot
+WorkingDirectory=/opt/confessbot/app
+EnvironmentFile=/opt/confessbot/.env
+ExecStart=/opt/confessbot/venv/bin/python app.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/opt/confessbot/data
+MemoryMax=400M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

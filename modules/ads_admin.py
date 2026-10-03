@@ -1,0 +1,278 @@
+"""Admin ad tools: /ads queue, approve/reject/schedule, manual payment override, /ad_report, /revenue, /refunds."""
+from __future__ import annotations
+
+import json
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+
+import db
+from common import is_private_chat, kb, parse_int, post_link
+from config import cfg
+from i18n import t
+from security import has_role, require, verify_cb
+
+AD_REJECT_REASONS = ("policy", "scam", "adult", "betting", "quality", "other")
+
+
+# ---------------------------------------------------------------------------
+# Transitions (single choke point)
+# ---------------------------------------------------------------------------
+
+ALLOWED = {
+    "paid": {"approved", "rejected"},
+    "needs_review": {"paid", "rejected", "cancelled"},
+    "approved": {"scheduled", "rejected"},
+    "scheduled": {"live", "done", "rejected"},
+    "live": {"done"},
+    "rejected": {"refund_due"},
+    "refund_due": {"cancelled"},
+}
+
+
+def transition(ad_id: int, to: str, actor: int, detail: str = "") -> bool:
+    row = db.one("SELECT status FROM ads WHERE id=?", (ad_id,))
+    if not row or to not in ALLOWED.get(row["status"], set()):
+        return False
+    db.execute("UPDATE ads SET status=? WHERE id=?", (to, ad_id))
+    db.audit(actor, f"ad_{to}", f"ad:{ad_id}", detail)
+    return True
+
+
+def schedule(ad_id: int, actor: int, not_before: int = 0) -> bool:
+    ad = db.one("SELECT * FROM ads WHERE id=? AND status='approved'", (ad_id,))
+    if not ad:
+        return False
+    pkg = db.one("SELECT * FROM packages WHERE id=?", (ad["package_id"],))
+    buttons = json.dumps([{"text": ad["button_text"], "url": ad["button_url"]}]) if ad["button_text"] and ad["button_url"] else None
+    posts = max(1, ad["posts_left"] or pkg["posts"] or 1) if pkg["posts"] else 0
+    with db.tx():
+        gap = 86400 if posts > 1 else 0  # bundle posts spaced a day apart
+        for i in range(posts):
+            db.execute("INSERT INTO outbox(kind, text, media_file_id, buttons, ref_id, not_before, approved_by, approved_at) "
+                       "VALUES ('ad',?,?,?,?,?,?,?)",
+                       (ad["text"], ad["media_file_id"], buttons, ad_id, not_before + i * gap, actor, db.now()))
+        if pkg["bot_banner_days"]:
+            start = max(not_before, db.now())
+            db.execute("INSERT INTO banners(ad_id, text, url, starts, ends) VALUES (?,?,?,?,?)",
+                       (ad_id, ad["text"][:120], ad["button_url"], start, start + pkg["bot_banner_days"] * 86400))
+        db.execute("UPDATE ads SET status=?, scheduled_at=?, approved_by=?, approved_at=? WHERE id=?",
+                   ("scheduled" if posts else "done", not_before, actor, db.now(), ad_id))
+    db.audit(actor, "ad_scheduled", f"ad:{ad_id}", f"posts={posts}")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Views
+# ---------------------------------------------------------------------------
+
+def _payment_summary(ad_id: int) -> str:
+    p = db.one("SELECT * FROM payments WHERE ad_id=? ORDER BY id DESC LIMIT 1", (ad_id,))
+    if not p:
+        return "payment: none"
+    match = {None: "?", 1: "✓", 0: "✗"}[p["receiver_match"]]
+    return (f"payment: {p['status']} · {p['bank']} {p['reference']} · amount {p['amount']} · sender {p['sender_name'] or '?'} "
+            f"· receiver {match} · reused {'yes' if p['confirmed_before'] else 'no'} · {p['reason'] or ''}")
+
+
+def _card(ad: dict) -> str:
+    pkg = db.one("SELECT name FROM packages WHERE id=?", (ad["package_id"],))
+    btn = f"\nbutton: {ad['button_text']} → {ad['button_url']}" if ad["button_url"] else ""
+    return (f"Ad #{ad['id']} · {pkg['name'] if pkg else '?'} · {ad['price_etb']} ETB · {ad['status']}\n"
+            f"{_payment_summary(ad['id'])}\n────────\n{ad['text']}{btn}\n"
+            f"{'📷 has photo' if ad['media_file_id'] else ''}")
+
+
+def _card_kb(ad: dict):
+    s = str(ad["id"])
+    if ad["status"] == "needs_review":
+        return kb([[("✅ Accept payment", "ada", f"manual_ok:{s}"), ("❌ Decline", "ada", f"manual_no:{s}")]])
+    return kb([[("✅ Approve & schedule", "ada", f"approve:{s}"), ("❌ Reject", "ada", f"rej:{s}")],
+               [("🕐 Schedule +24h", "ada", f"later:{s}")]])
+
+
+@require("admin")
+async def ads_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_private_chat(update):
+        return
+    rows = db.q("SELECT * FROM ads WHERE status IN ('paid','needs_review') ORDER BY CASE status WHEN 'needs_review' THEN 0 ELSE 1 END, id LIMIT 5")
+    if not rows:
+        await update.message.reply_text("No ads waiting.")
+        return
+    for r in rows:
+        ad = dict(r)
+        if ad["media_file_id"]:
+            try:
+                await update.message.reply_photo(ad["media_file_id"], caption=_card(ad)[:1000], reply_markup=_card_kb(ad))
+                continue
+            except TelegramError:
+                pass
+        await update.message.reply_text(_card(ad), reply_markup=_card_kb(ad), disable_web_page_preview=True)
+
+
+async def _notify_advertiser(context, ad_id: int, text: str) -> None:
+    uid = db.scalar("SELECT adv.user_id FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id WHERE a.id=?", (ad_id,))
+    if uid:
+        try:
+            await context.bot.send_message(uid, text, disable_web_page_preview=True)
+        except TelegramError:
+            pass
+
+
+@require("admin")
+async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    parsed = verify_cb(q.data)
+    if not parsed:
+        await q.answer()
+        return
+    parts = parsed[1].split(":")
+    action, ad_id = parts[0], parse_int(parts[1]) if len(parts) > 1 else None
+    extra = parts[2] if len(parts) > 2 else ""
+    actor = update.effective_user.id
+    if ad_id is None:
+        await q.answer()
+        return
+
+    if action == "approve":
+        if transition(ad_id, "approved", actor) and schedule(ad_id, actor):
+            await q.answer("Scheduled")
+            await _notify_advertiser(context, ad_id, t("en", "ads.approved", ad_id=ad_id))
+            await _edit(q, "✅ approved & scheduled")
+        else:
+            await q.answer("Not in a state that can be approved.", show_alert=True)
+    elif action == "later":
+        if transition(ad_id, "approved", actor) and schedule(ad_id, actor, not_before=db.now() + 86400):
+            await q.answer("Scheduled for +24h")
+            await _notify_advertiser(context, ad_id, t("en", "ads.approved", ad_id=ad_id))
+            await _edit(q, "🕐 scheduled +24h")
+        else:
+            await q.answer("Cannot schedule.", show_alert=True)
+    elif action == "rej":
+        await q.answer()
+        rows = [[(r, "ada", f"rejr:{ad_id}:{r}") for r in AD_REJECT_REASONS[:3]], [(r, "ada", f"rejr:{ad_id}:{r}") for r in AD_REJECT_REASONS[3:]]]
+        await q.message.edit_reply_markup(reply_markup=kb(rows))
+    elif action == "rejr":
+        reason = extra if extra in AD_REJECT_REASONS else "other"
+        paid = db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) in ("paid", "approved", "scheduled")
+        if transition(ad_id, "rejected", actor, reason):
+            db.execute("UPDATE ads SET reject_reason=? WHERE id=?", (reason, ad_id))
+            if paid:
+                transition(ad_id, "refund_due", actor, "auto")
+            db.execute("DELETE FROM outbox WHERE kind='ad' AND ref_id=?", (ad_id,))
+            await q.answer("Rejected")
+            await _notify_advertiser(context, ad_id, t("en", "ads.rejected", ad_id=ad_id, reason=reason))
+            await _edit(q, f"❌ rejected ({reason}){' · refund due' if paid else ''}")
+        else:
+            await q.answer("Cannot reject.", show_alert=True)
+    elif action == "manual_ok":
+        p = db.one("SELECT id FROM payments WHERE ad_id=? ORDER BY id DESC LIMIT 1", (ad_id,))
+        if p and transition(ad_id, "paid", actor, "manual_ok"):
+            try:
+                db.execute("UPDATE payments SET status='manual_ok', completed_at=? WHERE id=?", (db.now(), p["id"]))
+            except db.sqlite3.IntegrityError:
+                db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (ad_id,))
+                await q.answer("That reference is already used by a verified payment.", show_alert=True)
+                return
+            db.execute("UPDATE ads SET paid_at=? WHERE id=?", (db.now(), ad_id))
+            await q.answer("Marked paid")
+            await _notify_advertiser(context, ad_id, t("en", "ads.verified"))
+            ad = dict(db.one("SELECT * FROM ads WHERE id=?", (ad_id,)))
+            await _edit(q, "💰 payment accepted manually", markup=_card_kb(ad))
+        else:
+            await q.answer("Cannot accept.", show_alert=True)
+    elif action == "manual_no":
+        p = db.one("SELECT id FROM payments WHERE ad_id=? ORDER BY id DESC LIMIT 1", (ad_id,))
+        if transition(ad_id, "cancelled", actor, "manual_no"):
+            if p:
+                db.execute("UPDATE payments SET status='manual_no', completed_at=? WHERE id=?", (db.now(), p["id"]))
+            await q.answer("Declined")
+            await _notify_advertiser(context, ad_id, t("en", "ads.failed", left=0))
+            await _edit(q, "🚫 payment declined; order cancelled")
+        else:
+            await q.answer("Cannot decline.", show_alert=True)
+
+
+async def _edit(q, suffix: str, markup=None) -> None:
+    try:
+        if q.message.caption is not None:
+            await q.message.edit_caption(caption=(q.message.caption or "")[:900] + f"\n\n{suffix}", reply_markup=markup)
+        else:
+            await q.message.edit_text((q.message.text or "")[:3800] + f"\n\n{suffix}", reply_markup=markup)
+    except TelegramError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+
+def ad_report(context, ad_id: int) -> str:
+    posts = db.q("SELECT p.channel_msg_id FROM ad_posts ap JOIN posts p ON p.number=ap.post_number WHERE ap.ad_id=?", (ad_id,))
+    links = "\n".join(post_link(context, p["channel_msg_id"]) for p in posts) or "-"
+    subs = context.bot_data.get("channel_members", "n/a")
+    return t("en", "ads.report", ad_id=ad_id, posts=len(posts), subs=subs, links=links)
+
+
+@require("admin")
+async def ad_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ad_id = parse_int(context.args[0]) if context.args else None
+    if ad_id is None or not db.one("SELECT 1 FROM ads WHERE id=?", (ad_id,)):
+        await update.message.reply_text("Usage: /ad_report <ad id>")
+        return
+    await update.message.reply_text(ad_report(context, ad_id), disable_web_page_preview=True)
+
+
+@require("admin")
+async def revenue_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    days = parse_int(context.args[0]) if context.args else 30
+    since = db.now() - (days or 30) * 86400
+    rows = db.q("SELECT pk.name, p.bank, count(*) n, sum(p.amount) total FROM payments p JOIN ads a ON a.id=p.ad_id "
+                "JOIN packages pk ON pk.id=a.package_id WHERE p.status IN ('verified','manual_ok') AND p.completed_at>? "
+                "GROUP BY pk.name, p.bank ORDER BY total DESC", (since,))
+    total = sum(r["total"] or 0 for r in rows)
+    body = "\n".join(f"{r['name']} via {r['bank']}: {r['n']} × → {r['total']} ETB" for r in rows) or "no revenue"
+    await update.message.reply_text(f"Revenue last {days or 30} days: {total} ETB\n{body}")
+
+
+@require("owner")
+async def refunds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args and context.args[0] == "done" and len(context.args) > 1:
+        ad_id = parse_int(context.args[1])
+        if ad_id is not None and transition(ad_id, "cancelled", update.effective_user.id, "refunded"):
+            await update.message.reply_text(f"Ad #{ad_id} marked refunded.")
+        else:
+            await update.message.reply_text("Not in refund_due.")
+        return
+    rows = db.q("SELECT a.id, a.price_etb, p.bank, p.reference, p.sender_name FROM ads a LEFT JOIN payments p ON p.ad_id=a.id "
+                "AND p.status IN ('verified','manual_ok') WHERE a.status='refund_due' ORDER BY a.id")
+    body = "\n".join(f"#{r['id']} · {r['price_etb']} ETB · {r['bank']} {r['reference']} · {r['sender_name'] or '?'}" for r in rows) or "none"
+    await update.message.reply_text(f"Refunds due:\n{body}\n\n/refunds done <ad id> when paid back.")
+
+
+async def daily_ad_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """24h after an ad's last post: send the advertiser a report once."""
+    env = context.bot_data["env"]
+    try:
+        context.bot_data["channel_members"] = await context.bot.get_chat_member_count(env.channel_id)
+    except TelegramError:
+        pass
+    rows = db.q("SELECT a.id, adv.user_id FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id "
+                "WHERE a.status='done' AND a.id NOT IN (SELECT CAST(target AS INT) FROM audit WHERE action='ad_report_sent') "
+                "AND EXISTS (SELECT 1 FROM ad_posts ap JOIN posts p ON p.number=ap.post_number WHERE ap.ad_id=a.id AND p.posted_at<?)",
+                (db.now() - 86400,))
+    for r in rows:
+        try:
+            await context.bot.send_message(r["user_id"], ad_report(context, r["id"]), disable_web_page_preview=True)
+        except TelegramError:
+            pass
+        db.audit(0, "ad_report_sent", str(r["id"]))
+
+
+def register(app: Application) -> None:
+    app.add_handler(CommandHandler("ads", ads_cmd))
+    app.add_handler(CommandHandler("ad_report", ad_report_cmd))
+    app.add_handler(CommandHandler("revenue", revenue_cmd))
+    app.add_handler(CommandHandler("refunds", refunds_cmd))
+    app.add_handler(CallbackQueryHandler(ads_cb, pattern=r"^ada:"))
