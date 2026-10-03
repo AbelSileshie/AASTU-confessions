@@ -1,4 +1,8 @@
-"""Confession submission: category → text → preview → submit."""
+"""Confession submission: category → text → preview → submit.
+
+Navigation contract: every prompt carries [⬅️ Back] [✖️ Cancel]; every exit
+re-sends the bottom keyboard; bottom-keyboard labels abort the flow cleanly.
+"""
 from __future__ import annotations
 
 import json
@@ -16,7 +20,23 @@ from telegram.ext import (
 )
 
 import db
-from common import active_banner, category, ensure_user, is_banned, is_private_chat, kb, lang_of, main_menu
+from common import (
+    active_banner,
+    CONVERSATION_ACTIONS,
+    category,
+    dispatch_nav,
+    ensure_user,
+    exit_row,
+    is_banned,
+    is_private_chat,
+    kb,
+    lang_of,
+    nav_action,
+    nav_keyboard,
+    nav_regex,
+    redispatch,
+    send_home,
+)
 from config import cfg
 from i18n import t
 from security import verify_cb
@@ -26,7 +46,7 @@ CATEGORY, TEXT, PREVIEW = range(3)
 
 
 # ---------------------------------------------------------------------------
-# Pure-ish gate checks (return i18n key + kwargs, or None when allowed)
+# Gate checks (pure given DB state) → (i18n key, kwargs) or None
 # ---------------------------------------------------------------------------
 
 def _hours_open(spec: str, hour: int) -> bool:
@@ -40,7 +60,6 @@ def _hours_open(spec: str, hour: int) -> bool:
 
 
 def gate(author: str, now: int) -> tuple[str, dict] | None:
-    """Pre-text checks in the documented order. Pure given DB state."""
     if is_banned(author):
         return "submit.banned", {}
     user = db.one("SELECT last_submit, submits_today, submits_day FROM users WHERE author=?", (author,))
@@ -68,15 +87,62 @@ def wordlist(kind: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Conversation
+# Screens
 # ---------------------------------------------------------------------------
 
 def _category_kb(lang: str):
     cats = db.q("SELECT id, label FROM categories WHERE enabled=1 ORDER BY sort, id")
-    rows = [[(c["label"], "cat", str(c["id"]))] for c in cats]
+    rows, row = [], []
+    for c in cats:
+        row.append((c["label"], "cat", str(c["id"])))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
     rows.append([(t(lang, "menu.cancel"), "cat", "cancel")])
     return kb(rows)
 
+
+async def _ask_category(message, lang: str) -> int:
+    await message.reply_text(t(lang, "submit.pick_category"), reply_markup=_category_kb(lang))
+    return CATEGORY
+
+
+async def _ask_text(message, lang: str) -> int:
+    await message.reply_text(
+        t(lang, "submit.send_text", min=cfg("min_len", 20), max=cfg("max_len", 2000)),
+        reply_markup=exit_row(lang, back=("sub", "back_cat")),
+    )
+    return TEXT
+
+
+async def _show_preview(message, context, lang: str) -> int:
+    cat = category(context.user_data.get("category_id"))
+    await message.reply_text(
+        t(lang, "submit.preview", text=context.user_data["text"], hashtag=cat["hashtag"]),
+        reply_markup=kb([
+            [(t(lang, "submit.btn_submit"), "sub", "go")],
+            [(t(lang, "submit.btn_edit"), "sub", "edit"), ("🏷 " + cat["label"], "sub", "back_cat")],
+            [(t(lang, "menu.cancel"), "sub", "cancel")],
+        ]),
+    )
+    return PREVIEW
+
+
+async def _leave(message, context, lang: str, text_key: str = "nav.cancelled") -> int:
+    context.user_data.pop("category_id", None)
+    context.user_data.pop("text", None)
+    context.user_data.pop("text_hash", None)
+    context.user_data.pop("risk_hits", None)
+    context.user_data.pop("offered_text", None)
+    await send_home(message, lang, t(lang, text_key))
+    return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# Conversation
+# ---------------------------------------------------------------------------
 
 async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not is_private_chat(update):
@@ -85,14 +151,17 @@ async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.callback_query.answer()
     author = ensure_user(update.effective_user.id)
     lang = lang_of(update)
-    blocked = gate(author, db.now())
     msg = update.effective_message
+    blocked = gate(author, db.now())
     if blocked:
-        await msg.reply_text(t(lang, blocked[0], **blocked[1]))
+        await msg.reply_text(t(lang, blocked[0], **blocked[1]), reply_markup=nav_keyboard(lang))
         return ConversationHandler.END
-    context.user_data.clear()
-    await msg.reply_text(t(lang, "submit.pick_category"), reply_markup=_category_kb(lang))
-    return CATEGORY
+    offered = context.user_data.pop("offered_text", None)
+    for k in ("category_id", "text", "text_hash", "risk_hits"):
+        context.user_data.pop(k, None)
+    if offered and update.callback_query and update.callback_query.data.startswith("menu:confess_offer:"):
+        context.user_data["pending_offer"] = offered
+    return await _ask_category(msg, lang)
 
 
 async def pick_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -101,19 +170,24 @@ async def pick_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await q.answer()
     lang = lang_of(update)
     if not parsed or parsed[1] == "cancel":
-        await q.message.reply_text(t(lang, "submit.cancelled"), reply_markup=main_menu(lang))
-        return ConversationHandler.END
+        return await _leave(q.message, context, lang)
     cat = db.one("SELECT id FROM categories WHERE id=? AND enabled=1", (parsed[1],))
     if not cat:
         return CATEGORY
     context.user_data["category_id"] = cat["id"]
-    await q.message.reply_text(t(lang, "submit.send_text", min=cfg("min_len", 20), max=cfg("max_len", 2000)))
-    return TEXT
+    offered = context.user_data.pop("pending_offer", None)
+    if offered:
+        state = await _accept_text(q.message, context, lang, offered)
+        if state == PREVIEW:
+            return state
+    if "text" in context.user_data:  # came back from the preview to change category
+        return await _show_preview(q.message, context, lang)
+    return await _ask_text(q.message, lang)
 
 
-async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    lang = lang_of(update)
-    text = strip_invisible(update.message.text or "").strip()
+async def _accept_text(message, context, lang: str, text: str) -> int:
+    """Validate text; on success store it and show the preview. On failure
+    explain and stay in TEXT (with exits)."""
     result = check_text(
         text,
         min_len=cfg("min_len", 20),
@@ -121,58 +195,63 @@ async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         blocklist=wordlist("block"),
         risklist=wordlist("risk"),
     )
+    exits = exit_row(lang, back=("sub", "back_cat"))
     if not result.ok:
-        await update.message.reply_text(
-            t(lang, f"submit.{result.reason}", min=cfg("min_len", 20), max=cfg("max_len", 2000))
-        )
+        await message.reply_text(
+            t(lang, f"submit.{result.reason}", min=cfg("min_len", 20), max=cfg("max_len", 2000)), reply_markup=exits)
         return TEXT
     h = text_hash(text)
     if db.one("SELECT 1 FROM submissions WHERE text_hash=?", (h,)):
-        await update.message.reply_text(t(lang, "submit.duplicate"))
+        await message.reply_text(t(lang, "submit.duplicate"), reply_markup=exits)
         return TEXT
     context.user_data.update(text=text, text_hash=h, risk_hits=result.risk_hits)
-    cat = category(context.user_data.get("category_id"))
-    await update.message.reply_text(
-        t(lang, "submit.preview", text=text, hashtag=cat["hashtag"]),
-        reply_markup=kb([
-            [(t(lang, "submit.btn_submit"), "sub", "go"), (t(lang, "submit.btn_edit"), "sub", "edit")],
-            [(t(lang, "menu.cancel"), "sub", "cancel")],
-        ]),
-    )
-    return PREVIEW
+    return await _show_preview(message, context, lang)
+
+
+async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    lang = lang_of(update)
+    text = strip_invisible(update.message.text or "").strip()
+    return await _accept_text(update.message, context, lang, text)
 
 
 async def not_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(t(lang_of(update), "submit.text_only"))
+    lang = lang_of(update)
+    await update.message.reply_text(t(lang, "submit.text_only"), reply_markup=exit_row(lang, back=("sub", "back_cat")))
     return TEXT
 
 
-async def preview_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def flow_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """sub:* buttons: go / edit / back_cat / cancel — valid from TEXT and PREVIEW."""
     q = update.callback_query
     parsed = verify_cb(q.data)
     await q.answer()
     lang = lang_of(update)
-    if not parsed or parsed[1] == "cancel":
-        context.user_data.clear()
-        await q.message.reply_text(t(lang, "submit.cancelled"), reply_markup=main_menu(lang))
-        return ConversationHandler.END
-    if parsed[1] == "edit":
-        await q.message.reply_text(t(lang, "submit.send_text", min=cfg("min_len", 20), max=cfg("max_len", 2000)))
-        return TEXT
-    return await _finalize(update, context, lang)
+    action = parsed[1] if parsed else "cancel"
+    if action == "cancel":
+        return await _leave(q.message, context, lang)
+    if action == "back_cat":
+        return await _ask_category(q.message, lang)
+    if action == "edit":
+        return await _ask_text(q.message, lang)
+    if action == "go" and "text" in context.user_data:
+        return await _finalize(update, context, lang)
+    return await _leave(q.message, context, lang)
+
+
+async def nav_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    return await _leave(update.callback_query.message, context, lang_of(update))
 
 
 async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str) -> int:
     author = ensure_user(update.effective_user.id)
     now = db.now()
-    blocked = gate(author, now)
     msg = update.effective_message
+    blocked = gate(author, now)
     if blocked:
-        await msg.reply_text(t(lang, blocked[0], **blocked[1]))
+        await msg.reply_text(t(lang, blocked[0], **blocked[1]), reply_markup=nav_keyboard(lang))
         return ConversationHandler.END
     data = context.user_data
-    if "text" not in data:
-        return ConversationHandler.END
     hits = data.get("risk_hits") or []
     try:
         with db.tx():
@@ -188,40 +267,68 @@ async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: st
                 (now, today, today, author),
             )
     except db.sqlite3.IntegrityError:
-        await msg.reply_text(t(lang, "submit.duplicate"))
+        await msg.reply_text(t(lang, "submit.duplicate"), reply_markup=nav_keyboard(lang))
         return ConversationHandler.END
-    context.user_data.clear()
     reply = cfg("received_text", "")
     banner = active_banner()
     if banner:
         reply += f"\n\n{banner}"
-    await msg.reply_text(reply, reply_markup=main_menu(lang))
+    for k in ("category_id", "text", "text_hash", "risk_hits"):
+        context.user_data.pop(k, None)
+    await send_home(msg, lang, reply)
+    return ConversationHandler.END
+
+
+async def escape_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A bottom-keyboard label typed mid-flow: leave, then let core/others handle it next time.
+    Confess restarts the flow; Cancel/others exit."""
+    lang = lang_of(update)
+    action = nav_action(update.message.text)
+    for k in ("category_id", "text", "text_hash", "risk_hits", "pending_offer"):
+        context.user_data.pop(k, None)
+    if action == "confess":
+        return await _ask_category(update.message, lang)
+    if action in CONVERSATION_ACTIONS:
+        redispatch(update, context)  # another module's entry point takes over
+        return ConversationHandler.END
+    if not await dispatch_nav(update.message, context, lang, action):
+        await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
-    lang = lang_of(update)
-    await update.effective_message.reply_text(t(lang, "submit.cancelled"), reply_markup=main_menu(lang))
-    return ConversationHandler.END
+    return await _leave(update.effective_message, context, lang_of(update))
 
 
 def register(app: Application) -> None:
+    label_filter = filters.TEXT & filters.Regex(nav_regex())
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("confess", begin),
-            CallbackQueryHandler(begin, pattern=r"^menu:confess:"),
+            CallbackQueryHandler(begin, pattern=r"^menu:(confess|confess_offer):"),
+            MessageHandler(filters.TEXT & filters.Regex(_confess_label_regex()) & filters.ChatType.PRIVATE, begin),
         ],
         states={
             CATEGORY: [CallbackQueryHandler(pick_category, pattern=r"^cat:")],
             TEXT: [
+                MessageHandler(label_filter, escape_label),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text),
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, not_text),
             ],
-            PREVIEW: [CallbackQueryHandler(preview_action, pattern=r"^sub:")],
+            PREVIEW: [MessageHandler(label_filter, escape_label)],
         },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", cancel)],
+        fallbacks=[
+            CallbackQueryHandler(flow_cb, pattern=r"^sub:"),
+            CallbackQueryHandler(nav_cancel_cb, pattern=r"^nav:cancel:"),
+            MessageHandler(label_filter, escape_label),
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", cancel),
+        ],
         conversation_timeout=1800,
         name="submit",
     )
     app.add_handler(conv)
+
+
+def _confess_label_regex() -> str:
+    return nav_regex(only=("confess",))

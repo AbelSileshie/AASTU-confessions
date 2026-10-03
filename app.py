@@ -58,6 +58,9 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 def register_modules(app: Application) -> None:
     for name in MODULES:
         importlib.import_module(name).register(app)
+    from modules.core import register_late
+
+    register_late(app)
 
 
 def register_jobs(app: Application) -> None:
@@ -74,8 +77,9 @@ def register_jobs(app: Application) -> None:
 
 
 COMMANDS = [
-    BotCommand("start", "Main menu"), BotCommand("rules", "Rules"), BotCommand("delete", "Delete your confession"),
-    BotCommand("advertise", "Advertise"), BotCommand("myads", "Your ads"), BotCommand("lang", "Language"),
+    BotCommand("start", "Main menu"), BotCommand("confess", "Send a confession"), BotCommand("rules", "Rules"),
+    BotCommand("help", "How it works"), BotCommand("delete", "Delete your confession"), BotCommand("advertise", "Advertise"),
+    BotCommand("myads", "Your ads"), BotCommand("lang", "Language"), BotCommand("cancel", "Exit the current step"),
 ]
 
 
@@ -89,6 +93,9 @@ async def post_init(app: Application) -> None:
     except TelegramError:
         app.bot_data["channel_username"] = None
     await app.bot.set_my_commands(COMMANDS)
+    from modules.core import set_menu_button
+
+    await set_menu_button(app)
     if env.owner_id:
         try:
             await app.bot.send_message(env.owner_id, f"started · v{VERSION} · {env.run_mode}")

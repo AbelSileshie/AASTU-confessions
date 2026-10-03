@@ -56,5 +56,15 @@
   "connect.btn_accept": "✅ መገኛዬን አጋራ",
   "connect.btn_decline": "❌ አልፈልግም",
   "connect.sent": "ጥያቄ ተልኳል። ከተስማሙ ሁለታችሁም መገኛ ትለዋወጣላችሁ።",
-  "connect.declined_target": "ተከልክሏል። ምንም አልተጋራም።"
+  "connect.declined_target": "ተከልክሏል። ምንም አልተጋራም።",
+  "menu.help": "❓ እገዛ",
+  "nav.placeholder": "ከታች ያለውን ቁልፍ ይጫኑ…",
+  "nav.hub": "ምን ማድረግ ይፈልጋሉ?",
+  "nav.unknown": "አልገባኝም። ከታች ያሉትን ቁልፎች ይጠቀሙ — ኑዛዜ ለመላክ ✍️ ኑዛዜ ላክ ይጫኑ።",
+  "nav.offer_submit": "ይህን እንደ ኑዛዜ መላክ ፈልገው ነበር?",
+  "nav.btn_offer_yes": "✅ አዎ፣ ላክ",
+  "nav.btn_offer_no": "✖️ አይ",
+  "nav.cancelled": "ተሰርዟል። ወደ ዋና ገጽ ተመልሰዋል።",
+  "browse.empty": "ገና ምንም አልተለጠፈም። የመጀመሪያው ይሁኑ — ✍️ ኑዛዜ ላክ ይጫኑ።",
+  "ads.preview": "☝️ ማስታወቂያዎ እንዲህ ይታያል።"
 }

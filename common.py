@@ -6,16 +6,17 @@ textfilter/config/i18n). Modules never import each other.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.error import Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
 import db
 from config import cfg
-from i18n import t
+from i18n import SUPPORTED, t
 from security import author_hash, decrypt_ref, encrypt_ref, is_private_chat, sign_cb  # noqa: F401 - re-exported
 
 log = logging.getLogger(__name__)
@@ -112,6 +113,140 @@ def main_menu(lang: str, show_ads: bool = True) -> InlineKeyboardMarkup:
         second.insert(0, (t(lang, "menu.advertise"), "menu", "advertise"))
     rows.append(second)
     return kb(rows)
+
+
+# ---------------------------------------------------------------------------
+# Navigation: persistent bottom keyboard + in-flow exits
+# ---------------------------------------------------------------------------
+
+# label key → action. Labels are resolved per language; routing is language-agnostic.
+NAV_ACTIONS = {
+    "menu.confess": "confess",
+    "menu.browse": "browse",
+    "menu.advertise": "advertise",
+    "menu.rules": "rules",
+    "menu.help": "help",
+    "menu.lang": "lang",
+    "menu.cancel": "cancel",
+}
+
+
+def nav_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    """Always-visible bottom keyboard. Re-sent at the end of every flow."""
+    rows = [[t(lang, "menu.confess"), t(lang, "menu.browse")]]
+    second = [t(lang, "menu.rules"), t(lang, "menu.help")]
+    if cfg("ads_enabled", True):
+        second.insert(0, t(lang, "menu.advertise"))
+    rows.append(second)
+    rows.append([t(lang, "menu.lang")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
+                               input_field_placeholder=t(lang, "nav.placeholder"))
+
+
+def nav_action(text: str | None) -> str | None:
+    """Map a bottom-keyboard label (any language) to its action, else None."""
+    if not text:
+        return None
+    text = text.strip()
+    for key, action in NAV_ACTIONS.items():
+        for lang in SUPPORTED:
+            if text == t(lang, key):
+                return action
+    return None
+
+
+CONVERSATION_ACTIONS = ("confess", "advertise")  # owned by their own modules' entry points
+
+
+def nav_regex(only: tuple[str, ...] | None = None, exclude: tuple[str, ...] = ()) -> str:
+    """Regex matching bottom-keyboard labels in every language."""
+    keys = [k for k, a in NAV_ACTIONS.items() if (only is None or a in only) and a not in exclude]
+    labels = {t(lang, key) for key in keys for lang in SUPPORTED}
+    return "^(" + "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True)) + ")$"
+
+
+def exit_row(lang: str, back: tuple[str, str] | None = None) -> InlineKeyboardMarkup:
+    """[⬅️ Back] [✖️ Cancel] for prompts inside a flow. `back` = (action, payload)."""
+    row = []
+    if back:
+        row.append((t(lang, "menu.back"), back[0], back[1]))
+    row.append((t(lang, "menu.cancel"), "nav", "cancel"))
+    return kb([row])
+
+
+async def send_home(message, lang: str, text: str) -> None:
+    """Terminal message of a flow: the text plus the persistent bottom keyboard."""
+    await message.reply_text(text, reply_markup=nav_keyboard(lang))
+
+
+# ---------------------------------------------------------------------------
+# Shared screens (hub). Used by core and by conversations when a user escapes.
+# ---------------------------------------------------------------------------
+
+def rules_markup(lang: str) -> InlineKeyboardMarkup:
+    return kb([[(t(lang, "menu.takedown"), "takedown", "start")], [(t(lang, "menu.back"), "menu", "home")]])
+
+
+def lang_markup() -> InlineKeyboardMarkup:
+    labels = {"en": "English", "am": "አማርኛ"}
+    return kb([[(labels[code], "lang", code) for code in SUPPORTED], [("⬅️", "menu", "home")]])
+
+
+async def show_home(message, lang: str) -> None:
+    await message.reply_text(cfg("welcome_text", ""), reply_markup=nav_keyboard(lang))
+    await message.reply_text(t(lang, "nav.hub"), reply_markup=main_menu(lang))
+
+
+async def show_rules(message, lang: str) -> None:
+    await message.reply_text(cfg("rules_text", ""), reply_markup=rules_markup(lang))
+
+
+async def show_help(message, lang: str) -> None:
+    await message.reply_text(t(lang, "help"), reply_markup=nav_keyboard(lang))
+
+
+async def show_lang(message) -> None:
+    await message.reply_text(t("en", "lang.pick"), reply_markup=lang_markup())
+
+
+def recent_lines(context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
+    rows = db.q("SELECT number, channel_msg_id, comment_count FROM posts "
+                "WHERE deleted=0 AND kind='confession' ORDER BY number DESC LIMIT 8")
+    return [{"number": r["number"], "count": r["comment_count"],
+             "link": post_link(context, r["channel_msg_id"]) or bot_link(context, f"c_{r['number']}")} for r in rows]
+
+
+async def show_browse(message, context: ContextTypes.DEFAULT_TYPE, lang: str) -> None:
+    items = recent_lines(context)
+    text = "\n".join(f"#{i['number']} · 💬 {i['count']} · {i['link']}" for i in items) or t(lang, "browse.empty")
+    buttons = [[(f"💬 #{i['number']} ({i['count']})", "cm", f"pg:{i['number']}:0")] for i in items[:6]]
+    buttons.append([(t(lang, "menu.back"), "menu", "home")])
+    await message.reply_text(text, reply_markup=kb(buttons), disable_web_page_preview=True)
+
+
+def redispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-run this update after the current conversation has ended, so another
+    module's entry point (Confess ↔ Advertise) can pick it up."""
+    app = context.application
+    app.create_task(app.process_update(update), update=update)
+
+
+async def dispatch_nav(message, context: ContextTypes.DEFAULT_TYPE, lang: str, action: str | None) -> bool:
+    """Render the hub screen for a bottom-keyboard action. Returns False for
+    actions owned by conversations (confess/advertise)."""
+    if action == "browse":
+        await show_browse(message, context, lang)
+    elif action == "rules":
+        await show_rules(message, lang)
+    elif action == "help":
+        await show_help(message, lang)
+    elif action == "lang":
+        await show_lang(message)
+    elif action == "cancel":
+        await send_home(message, lang, t(lang, "nav.cancelled"))
+    else:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 import db
-from common import alert_admins, ensure_user, is_private_chat, kb, lang_of, main_menu, notify_author, parse_int, user_lang
+from common import CONVERSATION_ACTIONS, alert_admins, dispatch_nav, redispatch, show_rules, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from i18n import t
 from security import author_hash, require, verify_cb
 from textfilter import strip_invisible
@@ -57,15 +57,15 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lang = lang_of(update)
     number = parse_int(context.args[0]) if context.args else None
     if number is None:
-        await update.message.reply_text(t(lang, "delete.usage"))
+        await update.message.reply_text(t(lang, "delete.usage"), reply_markup=nav_keyboard(lang))
         return
     author = author_hash(update.effective_user.id)
     post = db.one("SELECT 1 FROM posts WHERE number=? AND author=? AND deleted=0", (number, author))
     if not post:
-        await update.message.reply_text(t(lang, "delete.not_yours"))
+        await update.message.reply_text(t(lang, "delete.not_yours"), reply_markup=nav_keyboard(lang))
         return
     await take_down(context, number, 0, "author", by_author=True)
-    await update.message.reply_text(t(lang, "delete.done", number=number))
+    await send_home(update.message, lang, t(lang, "delete.done", number=number))
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,8 @@ async def request_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     q = update.callback_query
     await q.answer()
     ensure_user(update.effective_user.id)
-    await q.message.reply_text(t(lang_of(update), "takedown.ask_number"))
+    lang = lang_of(update)
+    await q.message.reply_text(t(lang, "takedown.ask_number"), reply_markup=exit_row(lang, back=("menu", "rules")))
     return ASK_NUMBER
 
 
@@ -84,10 +85,10 @@ async def request_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lang = lang_of(update)
     number = parse_int(update.message.text)
     if number is None or not db.one("SELECT 1 FROM posts WHERE number=? AND deleted=0", (number,)):
-        await update.message.reply_text(t(lang, "takedown.invalid"))
+        await update.message.reply_text(t(lang, "takedown.invalid"), reply_markup=exit_row(lang, back=("menu", "rules")))
         return ASK_NUMBER
     context.user_data["td_number"] = number
-    await update.message.reply_text(t(lang, "takedown.ask_reason"))
+    await update.message.reply_text(t(lang, "takedown.ask_reason"), reply_markup=exit_row(lang, back=("takedown", "start")))
     return ASK_REASON
 
 
@@ -101,12 +102,27 @@ async def request_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     db.audit(0, "takedown_request", f"post:{number}", f"{requester} {reason}")
     await alert_admins(context, f"🛑 Takedown request for #{number}\nReason: {reason}",
                        reply_markup=kb([[("Take down", "td", f"go:{number}"), ("Ignore", "td", f"ignore:{number}")]]))
-    await update.message.reply_text(t(lang, "takedown.sent"), reply_markup=main_menu(lang))
+    await send_home(update.message, lang, t(lang, "takedown.sent"))
     return ConversationHandler.END
 
 
 async def request_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("td_number", None)
+    lang = lang_of(update)
+    if update.callback_query:
+        await update.callback_query.answer()
+        parsed = verify_cb(update.callback_query.data)
+        if parsed and parsed == ("menu", "rules"):
+            await show_rules(update.callback_query.message, lang)
+        else:
+            await send_home(update.callback_query.message, lang, t(lang, "nav.cancelled"))
+        return ConversationHandler.END
+    if update.message:
+        act = nav_action(update.message.text)
+        if act in CONVERSATION_ACTIONS:
+            redispatch(update, context)
+        elif not await dispatch_nav(update.message, context, lang, act):
+            await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END
 
 
@@ -135,10 +151,15 @@ def register(app: Application) -> None:
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(request_start, pattern=r"^takedown:start:")],
         states={
-            ASK_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_number)],
-            ASK_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_reason)],
+            ASK_NUMBER: [MessageHandler(filters.TEXT & filters.Regex(nav_regex()), request_cancel),
+                         MessageHandler(filters.TEXT & ~filters.COMMAND, request_number),
+                         CallbackQueryHandler(request_start, pattern=r"^takedown:start:")],
+            ASK_REASON: [MessageHandler(filters.TEXT & filters.Regex(nav_regex()), request_cancel),
+                         MessageHandler(filters.TEXT & ~filters.COMMAND, request_reason),
+                         CallbackQueryHandler(request_start, pattern=r"^takedown:start:")],
         },
-        fallbacks=[CommandHandler("cancel", request_cancel), CommandHandler("start", request_cancel)],
+        fallbacks=[CallbackQueryHandler(request_cancel, pattern=r"^(nav:cancel|menu:rules):"),
+                   CommandHandler("cancel", request_cancel), CommandHandler("start", request_cancel)],
         conversation_timeout=600,
         name="takedown_request",
     ))

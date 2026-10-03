@@ -95,6 +95,12 @@ class Harness:
 
     async def say(self, uid: int, text: str, chat_id: int | None = None, username: str | None = None):
         await self.app.process_update(text_update(self.bot, uid, text, chat_id, username))
+        await self._settle()
+
+    async def _settle(self):
+        import asyncio
+        for _ in range(3):
+            await asyncio.sleep(0)
 
     async def photo(self, uid: int, file_id: str = "PHOTO1"):
         await self.app.process_update(photo_update(self.bot, uid, file_id))

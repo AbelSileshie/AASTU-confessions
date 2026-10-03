@@ -32,6 +32,11 @@ class Sent:
             return []
         return [b for row in self.markup.get("inline_keyboard", []) for b in row]
 
+    def reply_labels(self) -> list[str]:
+        if not self.markup:
+            return []
+        return [b["text"] for row in self.markup.get("keyboard", []) for b in row]
+
     def button(self, label_substr: str) -> dict | None:
         for b in self.buttons():
             if label_substr in b.get("text", ""):
@@ -130,7 +135,9 @@ class FakeRequest(BaseRequest):
             if chat_id in self.fail_chats:
                 return self._err(403, "Forbidden: bot was blocked by the user")
             text = str(params.get("text") or params.get("caption") or "")
-            msg = self._msg(chat_id, text, reply_markup=markup) if markup else self._msg(chat_id, text)
+            # Telegram echoes only inline keyboards back on the Message object
+            echo = markup if markup and "inline_keyboard" in markup else None
+            msg = self._msg(chat_id, text, reply_markup=echo) if echo else self._msg(chat_id, text)
             if api == "sendPhoto":
                 msg["photo"] = [{"file_id": str(params.get("photo")), "file_unique_id": "u", "width": 1, "height": 1}]
                 msg["caption"] = text

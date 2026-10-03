@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 import db
-from common import alert_admins, ensure_user, is_banned, is_private_chat, kb, lang_of, main_menu, notify_author, parse_int, user_lang
+from common import CONVERSATION_ACTIONS, alert_admins, dispatch_nav, redispatch, ensure_user, exit_row, is_banned, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from config import cfg
 from i18n import t
 from security import author_hash, decrypt_ref, verify_cb
@@ -78,7 +78,7 @@ async def _show_thread(message, update: Update, number: int, before_id: int | No
     lang = lang_of(update)
     post = db.one("SELECT author, deleted FROM posts WHERE number=? AND kind='confession'", (number,))
     if not post or post["deleted"]:
-        await message.reply_text(t(lang, "comments.not_found"))
+        await message.reply_text(t(lang, "comments.not_found"), reply_markup=nav_keyboard(lang))
         return
     viewer = author_hash(update.effective_user.id)
     text, rows = render_thread(number, _thread_rows(number, before_id), lang, viewer == post["author"])
@@ -128,7 +128,8 @@ async def comments_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await q.answer()
         context.user_data["cm_number"] = int(parts[1])
         context.user_data["cm_reply"] = int(parts[2]) if len(parts) > 2 else None
-        await q.message.reply_text(t(lang, "comments.send", max=cfg("comment_max_len", 500)))
+        await q.message.reply_text(t(lang, "comments.send", max=cfg("comment_max_len", 500)),
+                                   reply_markup=exit_row(lang, back=("cm", f"pg:{parts[1]}:0")))
         return WRITE
     await q.answer()
     return ConversationHandler.END
@@ -147,17 +148,18 @@ async def write_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     now = db.now()
     last = db.scalar("SELECT last_comment FROM users WHERE author=?", (author,), 0) or 0
     cooldown = cfg("comment_cooldown_sec", 30)
+    exits = exit_row(lang, back=("cm", f"pg:{number}:0"))
     if now - last < cooldown:
-        await update.message.reply_text(t(lang, "comments.cooldown", seconds=cooldown - (now - last)))
+        await update.message.reply_text(t(lang, "comments.cooldown", seconds=cooldown - (now - last)), reply_markup=exits)
         return WRITE
     text = strip_invisible(update.message.text or "").strip()
     result = check_text(text, min_len=1, max_len=cfg("comment_max_len", 500), blocklist=_blocklist(), risklist=[])
     if not result.ok:
-        await update.message.reply_text(t(lang, f"submit.{result.reason}", min=1, max=cfg("comment_max_len", 500)))
+        await update.message.reply_text(t(lang, f"submit.{result.reason}", min=1, max=cfg("comment_max_len", 500)), reply_markup=exits)
         return WRITE
     post = db.one("SELECT 1 FROM posts WHERE number=? AND deleted=0", (number,))
     if not post:
-        await update.message.reply_text(t(lang, "comments.not_found"))
+        await update.message.reply_text(t(lang, "comments.not_found"), reply_markup=nav_keyboard(lang))
         return ConversationHandler.END
     reply_to = context.user_data.get("cm_reply")
     if reply_to and not db.one("SELECT 1 FROM comments WHERE id=? AND number=?", (reply_to, number)):
@@ -178,6 +180,22 @@ async def write_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def cancel_write(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("cm_number", None)
     context.user_data.pop("cm_reply", None)
+    lang = lang_of(update)
+    if update.callback_query:
+        await update.callback_query.answer()
+        parsed = verify_cb(update.callback_query.data)
+        if parsed and parsed[0] == "cm" and parsed[1].startswith("pg:"):
+            _, num, before = parsed[1].split(":")
+            await _show_thread(update.callback_query.message, update, int(num), int(before) or None)
+            return ConversationHandler.END
+        await send_home(update.callback_query.message, lang, t(lang, "nav.cancelled"))
+        return ConversationHandler.END
+    if update.message:
+        act = nav_action(update.message.text)
+        if act in CONVERSATION_ACTIONS:
+            redispatch(update, context)
+        elif not await dispatch_nav(update.message, context, lang, act):
+            await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END
 
 
@@ -365,8 +383,14 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("start", start_thread, filters=filters.Regex(r"^/start\s+c_\d+")), group=1)
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(comments_cb, pattern=r"^cm:")],
-        states={WRITE: [MessageHandler(filters.TEXT & ~filters.COMMAND, write_comment)]},
-        fallbacks=[CommandHandler("cancel", cancel_write), CommandHandler("start", cancel_write)],
+        states={WRITE: [
+            MessageHandler(filters.TEXT & filters.Regex(nav_regex()), cancel_write),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, write_comment),
+        ]},
+        fallbacks=[
+            CallbackQueryHandler(cancel_write, pattern=r"^(nav:cancel|cm:pg):"),
+            CommandHandler("cancel", cancel_write), CommandHandler("start", cancel_write),
+        ],
         conversation_timeout=600,
         name="comments",
     ))

@@ -9,7 +9,7 @@
   "menu.cancel": "✖️ Cancel",
   "lang.pick": "Choose your language / ቋንቋ ይምረጡ",
   "lang.set": "Language set to English.",
-  "help": "Commands:\n/start – main menu\n/rules – the rules\n/delete <number> – delete your own confession\n/lang – change language",
+  "help": "How it works:\n\n✍️ Confess — pick a category, send your text, confirm. A moderator reviews it and it appears in the channel as #N. You are notified.\n💬 Browse — latest posts and their comment threads.\n📢 Advertise — buy a sponsored post.\n📜 Rules — what is and isn't allowed; request a takedown.\n\nCommands: /delete <number> removes your own confession · /lang changes language · /cancel exits any step.\n\nEverything is anonymous: your Telegram ID is never stored.",
   "submit.pick_category": "Pick a category:",
   "submit.send_text": "Send your confession as text ({min}–{max} characters). No names, links or phone numbers.",
   "submit.preview": "Preview:\n\n{text}\n\n{hashtag}",
@@ -72,7 +72,7 @@
   "ads.send_button_text": "Button label (e.g. 'Order now'), or Skip:",
   "ads.send_button_url": "Button link (https://…):",
   "ads.bad_url": "That link is not allowed. Use a full https:// link (no shorteners or invite links).",
-  "ads.preview": "Preview of your ad:",
+  "ads.preview": "☝️ That is how your ad will look.",
   "ads.place_order": "🧾 Place order ({price} ETB)",
   "ads.pay_screen": "Order #{ad_id}: pay {price} ETB to one of these accounts:\n\n{accounts}\n\nThen tap “I have paid” and send the transaction reference.",
   "ads.no_accounts": "Payment is not available right now. Please contact an admin.",
@@ -115,5 +115,14 @@
   "connect.declined_target": "Declined. Nothing was shared.",
   "connect.declined_requester": "{alias} on #{number} declined to connect.",
   "connect.expired": "This request has expired.",
-  "connect.gone": "This request is no longer valid."
+  "connect.gone": "This request is no longer valid.",
+  "menu.help": "❓ Help",
+  "nav.placeholder": "Tap a button below…",
+  "nav.hub": "What would you like to do?",
+  "nav.unknown": "I didn't catch that. Use the buttons below — tap ✍️ Confess to send a confession.",
+  "nav.offer_submit": "Did you mean to send this as a confession?",
+  "nav.btn_offer_yes": "✅ Yes, confess this",
+  "nav.btn_offer_no": "✖️ No",
+  "nav.cancelled": "Okay, cancelled. You're back at the main menu.",
+  "browse.empty": "Nothing posted yet. Be the first — tap ✍️ Confess."
 }

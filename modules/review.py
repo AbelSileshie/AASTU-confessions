@@ -146,7 +146,7 @@ async def _serve(message, moderator_id: int, count: int = 1) -> None:
         sub = claim_next(moderator_id, db.now())
         if not sub:
             if served == 0:
-                await message.reply_text("Queue is empty 🎉")
+                await message.reply_text("Queue is empty 🎉", reply_markup=kb([[("🔄 Check again", "rv", "next:0"), ("📊 Stats", "rv", "stats:0")]]))
             return
         await _send_card(message, sub)
         served += 1
@@ -172,6 +172,13 @@ async def review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action == "next":
         await q.answer()
         await _serve(q.message, mod)
+        return
+    if action == "stats":
+        await q.answer()
+        size = _queue_size()
+        claimed = db.scalar("SELECT count(*) FROM submissions WHERE claimed_by IS NOT NULL", default=0)
+        await q.message.reply_text(f"Queue: {size} (claimed {claimed}). Use /stats for the full picture.",
+                                   reply_markup=kb([[("➡️ Next", "rv", "next:0")]]))
         return
 
     if action == "take":

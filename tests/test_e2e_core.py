@@ -20,9 +20,10 @@ CONFESSION = "I have been secretly leaving snacks in the library for whoever stu
 
 async def test_start_shows_menu_and_no_raw_id_stored(h):
     await h.say(STUDENT, "/start")
-    last = h.last(STUDENT)
-    assert "anonymous" in last.text.lower()
-    assert last.button("Confess") and last.button("Advertise") and last.button("Rules")
+    welcome, hub = h.tg.sent_to(STUDENT)[-2:]
+    assert "anonymous" in welcome.text.lower()
+    assert "✍️ Confess" in welcome.reply_labels() and "📜 Rules" in welcome.reply_labels()  # persistent keyboard
+    assert hub.button("Confess") and hub.button("Advertise") and hub.button("Rules")
     rows = db.q("SELECT * FROM users")
     assert len(rows) == 1 and rows[0]["author"] == author_hash(STUDENT)
     dump = " ".join(str(dict(r)) for r in rows)
