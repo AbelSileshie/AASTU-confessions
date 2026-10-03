@@ -14,7 +14,6 @@ from security import (
     require,
     role_of,
     sign_cb,
-    thread_alias_key,
     verify_cb,
 )
 from tests.conftest import OWNER_ID
@@ -44,10 +43,6 @@ class TestIdentity:
         assert decrypt_ref(bytes(blob)) is None
         assert decrypt_ref(None) is None
 
-    def test_alias_key_stable_in_thread_unlinkable_across(self):
-        a = author_hash(7)
-        assert thread_alias_key(1, a) == thread_alias_key(1, a)
-        assert thread_alias_key(1, a) != thread_alias_key(2, a)
 
 
 class TestCallbackSigning:

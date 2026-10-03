@@ -61,6 +61,7 @@ class FakeRequest(BaseRequest):
         self.fail_chats: set[int] = set()  # chats where sendMessage raises Forbidden
         self.deleted: list[tuple[int, int]] = []
         self.pinned: list[tuple[int, int]] = []
+        self.topics: list[str] = []
 
     async def initialize(self) -> None:  # noqa: D401
         return None
@@ -127,6 +128,9 @@ class FakeRequest(BaseRequest):
             return self._ok({"id": chat_id, "type": "channel", "title": "Test", "username": self.channel_username})
         if api == "getChatMemberCount":
             return self._ok(self.member_count)
+        if api == "createForumTopic":
+            self.topics.append(str(params.get("name")))
+            return self._ok({"message_thread_id": 100 + len(self.topics), "name": params.get("name"), "icon_color": 7322096})
         if api == "deleteMessage":
             self.deleted.append((chat_id, _int(params.get("message_id"))))
             self.calls.append(Sent(api, chat_id, _int(params.get("message_id")), "", None, params))

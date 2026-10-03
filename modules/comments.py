@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 import db
-from common import CONVERSATION_ACTIONS, alert_admins, dispatch_nav, redispatch, ensure_user, exit_row, is_banned, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
+from common import alert_admins, dispatch_nav, ensure_user, exit_row, is_banned, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from config import cfg
 from i18n import t
 from security import author_hash, decrypt_ref, verify_cb
@@ -78,7 +78,7 @@ async def _show_thread(message, update: Update, number: int, before_id: int | No
     lang = lang_of(update)
     post = db.one("SELECT author, deleted FROM posts WHERE number=? AND kind='confession'", (number,))
     if not post or post["deleted"]:
-        await message.reply_text(t(lang, "comments.not_found"), reply_markup=nav_keyboard(lang))
+        await message.reply_text(t(lang, "comments.not_found"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return
     viewer = author_hash(update.effective_user.id)
     text, rows = render_thread(number, _thread_rows(number, before_id), lang, viewer == post["author"])
@@ -159,7 +159,7 @@ async def write_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return WRITE
     post = db.one("SELECT 1 FROM posts WHERE number=? AND deleted=0", (number,))
     if not post:
-        await update.message.reply_text(t(lang, "comments.not_found"), reply_markup=nav_keyboard(lang))
+        await update.message.reply_text(t(lang, "comments.not_found"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     reply_to = context.user_data.get("cm_reply")
     if reply_to and not db.one("SELECT 1 FROM comments WHERE id=? AND number=?", (reply_to, number)):
@@ -191,10 +191,7 @@ async def cancel_write(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await send_home(update.callback_query.message, lang, t(lang, "nav.cancelled"))
         return ConversationHandler.END
     if update.message:
-        act = nav_action(update.message.text)
-        if act in CONVERSATION_ACTIONS:
-            redispatch(update, context)
-        elif not await dispatch_nav(update.message, context, lang, act):
+        if not await dispatch_nav(update.message, context, lang, nav_action(update.message.text)):
             await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END
 
@@ -237,7 +234,7 @@ async def _report(q, update, context, comment_id: int, lang: str) -> None:
     await q.answer(t(lang, "comments.reported"))
     if outcome == "hidden":
         c = db.one("SELECT number, text FROM comments WHERE id=?", (comment_id,))
-        await alert_admins(context, f"🙈 Comment {comment_id} on #{c['number']} auto-hidden after reports:\n\n{c['text']}",
+        await alert_admins(context, f"🙈 Comment {comment_id} on #{c['number']} auto-hidden after reports:\n\n{c['text']}", kind="takedowns",
                            reply_markup=kb([[("Unhide", "cma", f"unhide:{comment_id}"), ("Keep hidden", "cma", f"keep:{comment_id}")]]))
 
 

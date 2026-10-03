@@ -17,7 +17,7 @@ from telegram.ext import ContextTypes
 import db
 from config import cfg
 from i18n import SUPPORTED, t
-from security import author_hash, decrypt_ref, encrypt_ref, is_private_chat, sign_cb  # noqa: F401 - re-exported
+from security import author_hash, decrypt_ref, encrypt_ref, is_private_chat, role_of, sign_cb  # noqa: F401 - re-exported
 
 log = logging.getLogger(__name__)
 
@@ -75,14 +75,37 @@ async def notify_author(context: ContextTypes.DEFAULT_TYPE, author: str, text: s
         return False
 
 
-async def alert_admins(context: ContextTypes.DEFAULT_TYPE, text: str, **kw) -> None:
+TOPICS = ("review", "flagged", "takedowns", "declined", "ads", "alerts")
+TOPIC_NAMES = {"review": "📋 Final review", "flagged": "⚠️ Flagged", "takedowns": "🛑 Takedowns",
+               "declined": "🗂 Declined", "ads": "💰 Ads", "alerts": "🔔 Alerts"}
+
+
+def topic_id(kind: str) -> int | None:
+    """Forum thread id for an alert kind, or None → main chat."""
+    tid = cfg(f"topic_{kind}", 0) if kind in TOPICS else 0
+    return tid or None
+
+
+async def alert_admins(context: ContextTypes.DEFAULT_TYPE, text: str, kind: str = "alerts", **kw):
+    """Post to the admin group, routed into the topic for `kind` when configured.
+    Returns the sent Message or None."""
     group = context.bot_data.get("env").admin_group_id
     if not group:
-        return
+        return None
+    tid = topic_id(kind)
     try:
-        await context.bot.send_message(group, text, **kw)
+        return await context.bot.send_message(group, text, message_thread_id=tid, **kw)
     except TelegramError as exc:
-        log.warning("admin alert failed: %s", type(exc).__name__)
+        log.warning("admin alert failed (%s): %s", kind, type(exc).__name__)
+        if tid:  # topic may have been deleted → fall back to main chat and forget the id
+            db.execute("UPDATE settings SET value='0' WHERE key=?", (f"topic_{kind}",))
+            from config import invalidate
+            invalidate(f"topic_{kind}")
+            try:
+                return await context.bot.send_message(group, text, **kw)
+            except TelegramError:
+                return None
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -131,14 +154,21 @@ NAV_ACTIONS = {
 }
 
 
-def nav_keyboard(lang: str) -> ReplyKeyboardMarkup:
-    """Always-visible bottom keyboard. Re-sent at the end of every flow."""
+STAFF_LABELS = {"📋 Queue": "queue", "📊 Stats": "stats", "⚙️ Admin": "admin"}
+
+
+def nav_keyboard(lang: str, user_id: int | None = None) -> ReplyKeyboardMarkup:
+    """Always-visible bottom keyboard. Staff get an extra row (Queue / Stats / Admin)."""
     rows = [[t(lang, "menu.confess"), t(lang, "menu.browse")]]
     second = [t(lang, "menu.rules"), t(lang, "menu.help")]
     if cfg("ads_enabled", True):
         second.insert(0, t(lang, "menu.advertise"))
     rows.append(second)
     rows.append([t(lang, "menu.lang")])
+    role = role_of(user_id) if user_id else "user"
+    if role in ("moderator", "admin", "owner"):
+        staff_row = ["📋 Queue", "📊 Stats"] + (["⚙️ Admin"] if role != "moderator" else [])
+        rows.append(staff_row)
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
                                input_field_placeholder=t(lang, "nav.placeholder"))
 
@@ -176,7 +206,7 @@ def exit_row(lang: str, back: tuple[str, str] | None = None) -> InlineKeyboardMa
 
 async def send_home(message, lang: str, text: str) -> None:
     """Terminal message of a flow: the text plus the persistent bottom keyboard."""
-    await message.reply_text(text, reply_markup=nav_keyboard(lang))
+    await message.reply_text(text, reply_markup=nav_keyboard(lang, message.chat_id))
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +223,7 @@ def lang_markup() -> InlineKeyboardMarkup:
 
 
 async def show_home(message, lang: str) -> None:
-    await message.reply_text(cfg("welcome_text", ""), reply_markup=nav_keyboard(lang))
+    await message.reply_text(cfg("welcome_text", ""), reply_markup=nav_keyboard(lang, message.chat_id))
     await message.reply_text(t(lang, "nav.hub"), reply_markup=main_menu(lang))
 
 
@@ -202,7 +232,7 @@ async def show_rules(message, lang: str) -> None:
 
 
 async def show_help(message, lang: str) -> None:
-    await message.reply_text(t(lang, "help"), reply_markup=nav_keyboard(lang))
+    await message.reply_text(t(lang, "help"), reply_markup=nav_keyboard(lang, message.chat_id))
 
 
 async def show_lang(message) -> None:
@@ -224,13 +254,6 @@ async def show_browse(message, context: ContextTypes.DEFAULT_TYPE, lang: str) ->
     await message.reply_text(text, reply_markup=kb(buttons), disable_web_page_preview=True)
 
 
-def redispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Re-run this update after the current conversation has ended, so another
-    module's entry point (Confess ↔ Advertise) can pick it up."""
-    app = context.application
-    app.create_task(app.process_update(update), update=update)
-
-
 async def dispatch_nav(message, context: ContextTypes.DEFAULT_TYPE, lang: str, action: str | None) -> bool:
     """Render the hub screen for a bottom-keyboard action. Returns False for
     actions owned by conversations (confess/advertise)."""
@@ -244,6 +267,9 @@ async def dispatch_nav(message, context: ContextTypes.DEFAULT_TYPE, lang: str, a
         await show_lang(message)
     elif action == "cancel":
         await send_home(message, lang, t(lang, "nav.cancelled"))
+    elif action in CONVERSATION_ACTIONS:
+        # left one flow by tapping the other's label: exit cleanly, ask for one more tap
+        await send_home(message, lang, t(lang, "nav.left_flow", label=t(lang, f"menu.{action}")))
     else:
         return False
     return True

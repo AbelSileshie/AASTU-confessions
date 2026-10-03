@@ -7,6 +7,7 @@ MODULES = (
     "modules.review",
     "modules.comments",
     "modules.staff",
+    "modules.admin",
     "modules.settings",
     "modules.catalog",
     "modules.wordlist",

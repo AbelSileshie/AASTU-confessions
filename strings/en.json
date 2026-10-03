@@ -9,7 +9,7 @@
   "menu.cancel": "✖️ Cancel",
   "lang.pick": "Choose your language / ቋንቋ ይምረጡ",
   "lang.set": "Language set to English.",
-  "help": "How it works:\n\n✍️ Confess — pick a category, send your text, confirm. A moderator reviews it and it appears in the channel as #N. You are notified.\n💬 Browse — latest posts and their comment threads.\n📢 Advertise — buy a sponsored post.\n📜 Rules — what is and isn't allowed; request a takedown.\n\nCommands: /delete <number> removes your own confession · /lang changes language · /cancel exits any step.\n\nEverything is anonymous: your Telegram ID is never stored.",
+  "help": "How it works:\n\n✍️ Confess — pick a category, send your text, confirm. A moderator reviews it and it appears in the channel as #N. You are notified.\n💬 Browse — latest posts and their comment threads.\n📢 Advertise — buy a sponsored post.\n📜 Rules — what is and isn't allowed; request a takedown.\n\nCommands: /delete <number> removes your own confession · /lang changes language · /cancel exits any step.\n\nEverything is anonymous: your Telegram ID is never stored.\n\nStaff: 📋 Queue reviews confessions, 📊 Stats, ⚙️ Admin (admins) configures everything.",
   "submit.pick_category": "Pick a category:",
   "submit.send_text": "Send your confession as text ({min}–{max} characters). No names, links or phone numbers.",
   "submit.preview": "Preview:\n\n{text}\n\n{hashtag}",
@@ -124,5 +124,6 @@
   "nav.btn_offer_yes": "✅ Yes, confess this",
   "nav.btn_offer_no": "✖️ No",
   "nav.cancelled": "Okay, cancelled. You're back at the main menu.",
-  "browse.empty": "Nothing posted yet. Be the first — tap ✍️ Confess."
+  "browse.empty": "Nothing posted yet. Be the first — tap ✍️ Confess.",
+  "nav.left_flow": "Left the previous step. Tap {label} once more to start."
 }

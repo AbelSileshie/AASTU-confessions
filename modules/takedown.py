@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 import db
-from common import CONVERSATION_ACTIONS, alert_admins, dispatch_nav, redispatch, show_rules, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
+from common import alert_admins, dispatch_nav, show_rules, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from i18n import t
 from security import author_hash, require, verify_cb
 from textfilter import strip_invisible
@@ -57,12 +57,12 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lang = lang_of(update)
     number = parse_int(context.args[0]) if context.args else None
     if number is None:
-        await update.message.reply_text(t(lang, "delete.usage"), reply_markup=nav_keyboard(lang))
+        await update.message.reply_text(t(lang, "delete.usage"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return
     author = author_hash(update.effective_user.id)
     post = db.one("SELECT 1 FROM posts WHERE number=? AND author=? AND deleted=0", (number, author))
     if not post:
-        await update.message.reply_text(t(lang, "delete.not_yours"), reply_markup=nav_keyboard(lang))
+        await update.message.reply_text(t(lang, "delete.not_yours"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return
     await take_down(context, number, 0, "author", by_author=True)
     await send_home(update.message, lang, t(lang, "delete.done", number=number))
@@ -100,7 +100,7 @@ async def request_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     requester = author_hash(update.effective_user.id)[:12]
     db.audit(0, "takedown_request", f"post:{number}", f"{requester} {reason}")
-    await alert_admins(context, f"🛑 Takedown request for #{number}\nReason: {reason}",
+    await alert_admins(context, f"🛑 Takedown request for #{number}\nReason: {reason}", kind="takedowns",
                        reply_markup=kb([[("Take down", "td", f"go:{number}"), ("Ignore", "td", f"ignore:{number}")]]))
     await send_home(update.message, lang, t(lang, "takedown.sent"))
     return ConversationHandler.END
@@ -118,10 +118,7 @@ async def request_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await send_home(update.callback_query.message, lang, t(lang, "nav.cancelled"))
         return ConversationHandler.END
     if update.message:
-        act = nav_action(update.message.text)
-        if act in CONVERSATION_ACTIONS:
-            redispatch(update, context)
-        elif not await dispatch_nav(update.message, context, lang, act):
+        if not await dispatch_nav(update.message, context, lang, nav_action(update.message.text)):
             await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END
 

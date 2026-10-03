@@ -68,10 +68,30 @@ def expire_connects(now: int) -> None:
                (now, now - ttl * 3600))
 
 
+def expired_declined(now: int) -> list[dict]:
+    ttl = cfg("declined_ttl_hours", 72)
+    return [dict(r) for r in db.q("SELECT id, group_msg_id FROM declined WHERE created<?", (now - ttl * 3600,))]
+
+
+async def purge_declined(context, now: int) -> int:
+    """Delete expired Declined cards from the group and the rows (the only copy of that text)."""
+    env = context.bot_data["env"]
+    rows = expired_declined(now)
+    for r in rows:
+        if r["group_msg_id"] and env.admin_group_id:
+            try:
+                await context.bot.delete_message(env.admin_group_id, r["group_msg_id"])
+            except TelegramError:
+                pass
+        db.execute("DELETE FROM declined WHERE id=?", (r["id"],))
+    return len(rows)
+
+
 async def housekeeping_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     now = db.now()
     try:
         release_stale_claims(now)
+        await purge_declined(context, now)
         expire_submissions(now)
         expire_invites(now)
         expire_connects(now)

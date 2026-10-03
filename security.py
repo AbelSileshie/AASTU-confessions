@@ -43,12 +43,6 @@ def author_hash(telegram_id: int) -> str:
     return hmac.new(_hmac_secret, str(int(telegram_id)).encode(), hashlib.sha256).hexdigest()
 
 
-def thread_alias_key(number: int, author: str) -> str:
-    """Stable per-thread pseudonym key: same author → same key within a
-    thread, unlinkable across threads."""
-    return hmac.new(_hmac_secret, f"alias:{number}:{author}".encode(), hashlib.sha256).hexdigest()[:16]
-
-
 def encrypt_ref(telegram_id: int) -> bytes:
     if _fernet is None:
         raise RuntimeError("security.configure() not called")

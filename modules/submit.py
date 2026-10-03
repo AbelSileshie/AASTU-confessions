@@ -22,7 +22,6 @@ from telegram.ext import (
 import db
 from common import (
     active_banner,
-    CONVERSATION_ACTIONS,
     category,
     dispatch_nav,
     ensure_user,
@@ -34,7 +33,6 @@ from common import (
     nav_action,
     nav_keyboard,
     nav_regex,
-    redispatch,
     send_home,
 )
 from config import cfg
@@ -154,7 +152,7 @@ async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
     blocked = gate(author, db.now())
     if blocked:
-        await msg.reply_text(t(lang, blocked[0], **blocked[1]), reply_markup=nav_keyboard(lang))
+        await msg.reply_text(t(lang, blocked[0], **blocked[1]), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     offered = context.user_data.pop("offered_text", None)
     for k in ("category_id", "text", "text_hash", "risk_hits"):
@@ -249,7 +247,7 @@ async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: st
     msg = update.effective_message
     blocked = gate(author, now)
     if blocked:
-        await msg.reply_text(t(lang, blocked[0], **blocked[1]), reply_markup=nav_keyboard(lang))
+        await msg.reply_text(t(lang, blocked[0], **blocked[1]), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     data = context.user_data
     hits = data.get("risk_hits") or []
@@ -267,7 +265,7 @@ async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: st
                 (now, today, today, author),
             )
     except db.sqlite3.IntegrityError:
-        await msg.reply_text(t(lang, "submit.duplicate"), reply_markup=nav_keyboard(lang))
+        await msg.reply_text(t(lang, "submit.duplicate"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     reply = cfg("received_text", "")
     banner = active_banner()
@@ -288,9 +286,6 @@ async def escape_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         context.user_data.pop(k, None)
     if action == "confess":
         return await _ask_category(update.message, lang)
-    if action in CONVERSATION_ACTIONS:
-        redispatch(update, context)  # another module's entry point takes over
-        return ConversationHandler.END
     if not await dispatch_nav(update.message, context, lang, action):
         await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END

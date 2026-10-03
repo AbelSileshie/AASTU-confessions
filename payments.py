@@ -285,7 +285,7 @@ async def verify_payment(context, payment_id: int) -> tuple[str, Acceptance | No
     if outcome.kind == "no_credits":
         db.execute("UPDATE payments SET status='failed', reason='no_credits', raw=? WHERE id=?", (outcome.raw, payment_id))
         db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (p["ad_id"],))
-        await alert_admins(context, "❗ Verify.et credits exhausted. Ads are falling into manual review.")
+        await alert_admins(context, "❗ Verify.et credits exhausted. Ads are falling into manual review.", kind="ads")
         return "no_credits", None
     if outcome.kind == "retry":
         db.execute("UPDATE payments SET status='queued', raw=? WHERE id=?", (outcome.raw, payment_id))
@@ -331,7 +331,7 @@ async def _give_up(context, payment_id: int, reason: str) -> None:
     ad_id = db.scalar("SELECT ad_id FROM payments WHERE id=?", (payment_id,))
     db.execute("UPDATE payments SET status='failed', reason=? WHERE id=?", (reason, payment_id))
     db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (ad_id,))
-    await alert_admins(context, f"❗ Payment {payment_id} for ad {ad_id} could not be verified ({reason}); manual review.")
+    await alert_admins(context, f"❗ Payment {payment_id} for ad {ad_id} could not be verified ({reason}); manual review.", kind="ads")
 
 
 async def notify_outcome(context, payment_id: int, acc: Acceptance | None) -> None:
@@ -345,7 +345,7 @@ async def notify_outcome(context, payment_id: int, acc: Acceptance | None) -> No
     except TelegramError:
         pass
     if acc.status in ("mismatch", "needs_review"):
-        await alert_admins(context, f"🧾 Ad #{row['ad_id']} payment needs review ({acc.reason}). Use /ads.")
+        await alert_admins(context, f"🧾 Ad #{row['ad_id']} payment needs review ({acc.reason}). Use /ads.", kind="ads")
 
 
 def outcome_message(lang: str, acc: Acceptance, price: int, attempts_left: int | None) -> str:

@@ -73,7 +73,7 @@ async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     code = parsed[1]
     author = ensure_user(update.effective_user.id)
     db.execute("UPDATE users SET lang=? WHERE author=?", (code, author))
-    await q.message.reply_text(t(code, "lang.set"), reply_markup=nav_keyboard(code))
+    await q.message.reply_text(t(code, "lang.set"), reply_markup=nav_keyboard(code, update.effective_user.id))
     await q.message.reply_text(t(code, "nav.hub"), reply_markup=main_menu(code))
 
 
@@ -107,7 +107,7 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=kb([[(t(lang, "nav.btn_offer_yes"), "menu", "confess_offer"), (t(lang, "nav.btn_offer_no"), "nav", "cancel")]]),
         )
         return
-    await update.message.reply_text(t(lang, "nav.unknown"), reply_markup=nav_keyboard(lang))
+    await update.message.reply_text(t(lang, "nav.unknown"), reply_markup=nav_keyboard(lang, update.effective_user.id))
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -132,7 +132,7 @@ def register(app: Application) -> None:
 
 
 # keys other modules keep in user_data while a stateful (non-conversation) step is pending
-_PENDING_KEYS = ("editing", "setting_key")
+_PENDING_KEYS = ("editing", "setting_key", "hub_input")
 
 
 def _idle(context) -> bool:

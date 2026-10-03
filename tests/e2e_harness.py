@@ -177,6 +177,9 @@ async def h(tmp_path, monkeypatch):
                                                          client=httpx.AsyncClient(transport=verify.transport()))
     await application.initialize()
     await application.start()
+    # legacy single-stage approval for the existing suites; test_e2e_admin covers two-stage
+    db.execute("UPDATE settings SET value='0' WHERE key='final_review'")
+    config.invalidate()
     req.clear()
     harness = Harness(application, req, verify, env)
     yield harness

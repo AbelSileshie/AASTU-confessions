@@ -57,6 +57,8 @@ async def test_bottom_labels_route_everywhere(h):
     assert h.last(S).button("አማርኛ")
     await h.say(S, "✍️ Confess")
     assert h.last(S).button("Campus")
+    await h.say(S, "📢 Advertise")  # switching flows: exits with a hint, one more tap starts the other
+    assert "once more" in h.last(S).text and h.last(S).reply_labels()
     await h.say(S, "📢 Advertise")
     assert h.last(S).button("Basic post")
 

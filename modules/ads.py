@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 import db
-from common import CONVERSATION_ACTIONS, alert_admins, dispatch_nav, redispatch, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, send_home
+from common import alert_admins, dispatch_nav, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, send_home
 from config import cfg
 from i18n import t
 from payments import BANK_FIELDS, clean_extra, clean_reference, outcome_message, record_payment, verify_payment
@@ -80,15 +80,15 @@ async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     lang = lang_of(update)
     msg = update.effective_message
     if not cfg("ads_enabled", True):
-        await msg.reply_text(t(lang, "ads.disabled"), reply_markup=nav_keyboard(lang))
+        await msg.reply_text(t(lang, "ads.disabled"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     adv = ensure_advertiser(update.effective_user.id, update.effective_user.full_name or "")
     if adv["blocked"]:
-        await msg.reply_text(t(lang, "ads.blocked"), reply_markup=nav_keyboard(lang))
+        await msg.reply_text(t(lang, "ads.blocked"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     pkgs = db.q("SELECT id, name, price_etb, description FROM packages WHERE enabled=1 ORDER BY sort, id")
     if not pkgs:
-        await msg.reply_text(t(lang, "ads.disabled"), reply_markup=nav_keyboard(lang))
+        await msg.reply_text(t(lang, "ads.disabled"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     context.user_data["ad"] = {}
     rows = [[(f"{p['name']} — {p['price_etb']} ETB", "adp", str(p["id"]))] for p in pkgs]
@@ -223,7 +223,7 @@ async def preview_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("ad", None)
     screen = pay_screen(ad_id, pkg["price_etb"], lang)
     if not screen:
-        await q.message.reply_text(t(lang, "ads.no_accounts"), reply_markup=nav_keyboard(lang))
+        await q.message.reply_text(t(lang, "ads.no_accounts"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     await q.message.reply_text(*screen[:1], reply_markup=screen[1])
     return ConversationHandler.END
@@ -270,9 +270,6 @@ async def escape_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     action = nav_action(update.message.text)
     if action == "advertise":
         return await begin(update, context)
-    if action in CONVERSATION_ACTIONS:
-        redispatch(update, context)
-        return ConversationHandler.END
     if not await dispatch_nav(update.message, context, lang, action):
         await send_home(update.message, lang, t(lang, "ads.cancelled"))
     return ConversationHandler.END
@@ -303,7 +300,7 @@ async def pay_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     accounts = db.q("SELECT id, bank, account FROM payout_accounts WHERE enabled=1 ORDER BY sort, id")
     if not accounts:
-        await q.message.reply_text(t(lang, "ads.no_accounts"), reply_markup=nav_keyboard(lang))
+        await q.message.reply_text(t(lang, "ads.no_accounts"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     context.user_data["pay"] = {"ad_id": ad_id}
     rows = [[(f"{BANK_FIELDS.get(a['bank'], {}).get('label', a['bank'])} …{a['account'][-4:]}", "adb", str(a["id"]))] for a in accounts]
@@ -384,7 +381,7 @@ async def _submit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, la
         left = max_attempts - attempts
         if acc.status in ("failed", "duplicate") and left <= 0:
             db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (ad["id"],))
-            await alert_admins(context, f"🧾 Ad #{ad['id']}: {attempts} failed payment attempts; manual review.")
+            await alert_admins(context, f"🧾 Ad #{ad['id']}: {attempts} failed payment attempts; manual review.", kind="ads")
             await send_home(update.message, lang, t(lang, "ads.needs_review"))
         else:
             final = acc.status not in ("failed", "duplicate")
@@ -397,7 +394,7 @@ async def _submit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, la
                 if screen:
                     await update.message.reply_text(screen[0], reply_markup=screen[1])
         if acc.status in ("mismatch", "needs_review"):
-            await alert_admins(context, f"🧾 Ad #{ad['id']} payment needs review ({acc.reason}). Use /ads.")
+            await alert_admins(context, f"🧾 Ad #{ad['id']} payment needs review ({acc.reason}). Use /ads.", kind="ads")
     elif kind in ("queued", "retry"):
         await send_home(update.message, lang, t(lang, "ads.queued"))
     elif kind == "invalid":
@@ -425,11 +422,7 @@ async def pay_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     else:
         await send_home(msg, lang, t(lang, "nav.cancelled"))
     if update.message and nav_action(update.message.text):
-        act = nav_action(update.message.text)
-        if act in CONVERSATION_ACTIONS:
-            redispatch(update, context)
-        else:
-            await dispatch_nav(update.message, context, lang, act)
+        await dispatch_nav(update.message, context, lang, nav_action(update.message.text))
     return ConversationHandler.END
 
 
@@ -443,10 +436,10 @@ async def myads(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     rows = db.q("SELECT a.id, a.status, a.price_etb, p.name FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id "
                 "JOIN packages p ON p.id=a.package_id WHERE adv.user_id=? ORDER BY a.id DESC LIMIT 10", (update.effective_user.id,))
     if not rows:
-        await update.message.reply_text("You have no ads yet. Tap 📢 Advertise to start.", reply_markup=nav_keyboard(lang_of(update)))
+        await update.message.reply_text("You have no ads yet. Tap 📢 Advertise to start.", reply_markup=nav_keyboard(lang_of(update), update.effective_user.id))
         return
     await update.message.reply_text("\n".join(f"#{r['id']} · {r['name']} · {r['price_etb']} ETB · {r['status']}" for r in rows),
-                                    reply_markup=nav_keyboard(lang_of(update)))
+                                    reply_markup=nav_keyboard(lang_of(update), update.effective_user.id))
 
 
 def _advertise_label_regex() -> str:

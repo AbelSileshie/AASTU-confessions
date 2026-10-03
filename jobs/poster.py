@@ -39,10 +39,10 @@ def ad_allowed(now: int) -> bool:
 
 def pick_next(now: int) -> dict | None:
     if ad_allowed(now):
-        ad = db.one("SELECT * FROM outbox WHERE kind='ad' AND not_before<=? ORDER BY id LIMIT 1", (now,))
+        ad = db.one("SELECT * FROM outbox WHERE kind='ad' AND stage='ready' AND not_before<=? ORDER BY id LIMIT 1", (now,))
         if ad:
             return dict(ad)
-    row = db.one("SELECT * FROM outbox WHERE kind IN ('confession','system') AND not_before<=? ORDER BY id LIMIT 1", (now,))
+    row = db.one("SELECT * FROM outbox WHERE kind IN ('confession','system') AND stage='ready' AND not_before<=? ORDER BY id LIMIT 1", (now,))
     return dict(row) if row else None
 
 

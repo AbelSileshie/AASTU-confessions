@@ -47,9 +47,6 @@ async def test_thread_aliases_and_replies(h):
     thread = h.last(A).text
     assert "Anon 1" in thread and "Anon 2" in thread and "OP" in thread and "(4)" in thread
     assert db.scalar("SELECT comment_count FROM posts WHERE number=?", (n,)) == 4
-    # alias is per-thread: A is Anon 1 here but may differ elsewhere (hash key differs)
-    from security import thread_alias_key
-    assert thread_alias_key(n, author_hash(A)) != thread_alias_key(n + 1, author_hash(A))
 
 
 async def test_comment_filters_and_cooldown(h):

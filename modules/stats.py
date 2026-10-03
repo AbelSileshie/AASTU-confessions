@@ -3,33 +3,12 @@ from __future__ import annotations
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
 from common import is_private_chat, post_link
+from ops import gather_stats
 from security import require
-
-
-def gather_stats(now: int) -> dict:
-    day = now - 86400
-    week = now - 7 * 86400
-    month_start = now - 30 * 86400
-    return {
-        "queue": db.scalar("SELECT count(*) FROM submissions", default=0),
-        "claimed": db.scalar("SELECT count(*) FROM submissions WHERE claimed_by IS NOT NULL", default=0),
-        "outbox": db.scalar("SELECT count(*) FROM outbox", default=0),
-        "posted_today": db.scalar("SELECT count(*) FROM posts WHERE posted_at>?", (day,), 0),
-        "posted_7d": db.scalar("SELECT count(*) FROM posts WHERE posted_at>?", (week,), 0),
-        "comments_today": db.scalar("SELECT count(*) FROM comments WHERE created>?", (day,), 0),
-        "pending_ads": db.scalar("SELECT count(*) FROM ads WHERE status IN ('paid','needs_review')", default=0),
-        "revenue_30d": db.scalar(
-            "SELECT coalesce(sum(amount),0) FROM payments WHERE status IN ('verified','manual_ok') AND completed_at>?",
-            (month_start,), 0),
-        "on_shift": db.scalar("SELECT count(*) FROM staff WHERE on_shift=1 AND active=1", default=0),
-        "mods_today": [dict(r) for r in db.q(
-            "SELECT actor, count(*) n FROM audit WHERE action IN ('approve','reject') AND at>? GROUP BY actor ORDER BY n DESC",
-            (day,))],
-    }
 
 
 @require("moderator")
@@ -39,7 +18,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     s = gather_stats(db.now())
     mods = "\n".join(f"  {m['actor']}: {m['n']}" for m in s["mods_today"]) or "  –"
     await update.message.reply_text(
-        f"Queue: {s['queue']} (claimed {s['claimed']}) · Outbox: {s['outbox']}\n"
+        f"Queue: {s['queue']} (claimed {s['claimed']}) · Final review: {s['final']} · Outbox: {s['outbox']}\n"
         f"Posted: {s['posted_today']} today · {s['posted_7d']} / 7d\n"
         f"Comments today: {s['comments_today']}\n"
         f"Pending ads: {s['pending_ads']} · Revenue 30d: {s['revenue_30d']} ETB\n"
@@ -81,5 +60,6 @@ async def mediakit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def register(app: Application) -> None:
     app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^📊 Stats$") & filters.ChatType.PRIVATE, stats_cmd))
     app.add_handler(CommandHandler("top", top_cmd))
     app.add_handler(CommandHandler("mediakit", mediakit_cmd))
