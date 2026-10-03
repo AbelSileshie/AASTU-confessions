@@ -33,7 +33,8 @@ def expire_submissions(now: int) -> list[str]:
         return []
     rows = db.q("SELECT id, author FROM submissions WHERE created<? AND claimed_by IS NULL", (now - ttl * 3600,))
     if rows:
-        db.execute("DELETE FROM submissions WHERE id IN (%s)" % ",".join("?" * len(rows)), [r["id"] for r in rows])
+        placeholders = ",".join("?" * len(rows))
+        db.execute(f"DELETE FROM submissions WHERE id IN ({placeholders})", [r["id"] for r in rows])  # nosec B608 - placeholders only
     return [r["author"] for r in rows]
 
 

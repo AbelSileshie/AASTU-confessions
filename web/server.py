@@ -27,7 +27,7 @@ def verify_signature(secret: str, timestamp: str | None, raw_body: bytes, header
     """HMAC-SHA256(secret, f"{timestamp}.{body}") compared constant-time against
     each `sha256=<hex>` value in the header (two values during rotation)."""
     if not secret:
-        return True  # signatures not configured
+        return False  # fail closed: unsigned webhooks are never trusted
     if not timestamp or not header:
         return False
     try:
@@ -57,10 +57,16 @@ async def telegram_webhook(request: web.Request) -> web.Response:
         data = await request.json()
     except (ValueError, UnicodeDecodeError):
         return web.Response(status=400)
+    if not isinstance(data, dict) or not isinstance(data.get("update_id"), int):
+        return web.Response(status=400)
     application = request.app["application"]
-    update = Update.de_json(data, application.bot)
+    try:
+        update = Update.de_json(data, application.bot)
+    except (KeyError, TypeError, ValueError):
+        return web.Response(status=400)
     if update is None:
         return web.Response(status=400)
+    request.app["state"]["last_update_at"] = db.now()
     await application.update_queue.put(update)
     return web.Response(status=200)
 
@@ -100,7 +106,7 @@ async def _safe(handler, payload, application) -> None:
 async def healthz(request: web.Request) -> web.Response:
     now = db.now()
     last_post = int(db.scalar("SELECT v FROM meta WHERE k='last_post_at'", default="0") or 0)
-    last_update = request.app.get("last_update_at", 0)
+    last_update = request.app["state"].get("last_update_at", 0)
     body = {
         "ok": True,
         "queue": db.scalar("SELECT count(*) FROM submissions", default=0),
@@ -116,6 +122,7 @@ def build_app(env, application, verify_handler=None) -> web.Application:
     app["env"] = env
     app["application"] = application
     app["verify_handler"] = verify_handler
+    app["state"] = {}
     app.router.add_post(env.webhook_path, telegram_webhook)
     app.router.add_post("/webhooks/verify", verify_webhook)
     app.router.add_get("/healthz", healthz)

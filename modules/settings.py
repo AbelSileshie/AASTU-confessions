@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import config
@@ -130,7 +131,7 @@ async def cancel_setting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def export_config() -> dict:
-    return {tbl: [dict(r) for r in db.q(f"SELECT * FROM {tbl}")] for tbl in CONFIG_TABLES}  # noqa: S608 - constant names
+    return {tbl: [dict(r) for r in db.q(f"SELECT * FROM {tbl}")] for tbl in CONFIG_TABLES}  # nosec B608 - CONFIG_TABLES constant
 
 
 def import_config(data: dict, actor: int) -> int:
@@ -141,14 +142,14 @@ def import_config(data: dict, actor: int) -> int:
             rows = data.get(tbl)
             if not isinstance(rows, list):
                 continue
-            cols = [r["name"] for r in db.q(f"PRAGMA table_info({tbl})")]  # noqa: S608
-            db.execute(f"DELETE FROM {tbl}")  # noqa: S608
+            cols = [r["name"] for r in db.q(f"PRAGMA table_info({tbl})")]  # nosec B608 - constant
+            db.execute(f"DELETE FROM {tbl}")  # nosec B608 - constant
             for row in rows:
                 if not isinstance(row, dict):
                     continue
                 keys = [c for c in cols if c in row]
                 placeholders = ",".join("?" for _ in keys)
-                db.execute(f"INSERT INTO {tbl}({','.join(keys)}) VALUES ({placeholders})",  # noqa: S608
+                db.execute(f"INSERT INTO {tbl}({','.join(keys)}) VALUES ({placeholders})",  # nosec B608 - keys ⊆ PRAGMA columns
                            [row[k] for k in keys])
                 count += 1
     config.invalidate()
@@ -191,7 +192,7 @@ async def post_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     msg = await context.bot.send_message(env.channel_id, cfg("rules_text", ""))
     try:
         await context.bot.pin_chat_message(env.channel_id, msg.message_id, disable_notification=True)
-    except Exception:  # noqa: BLE001
+    except TelegramError:  # nosec B110 - pinning is best-effort; the post itself succeeded
         pass
     db.audit(update.effective_user.id, "post_rules", str(msg.message_id))
     await update.message.reply_text("Rules posted and pinned.")

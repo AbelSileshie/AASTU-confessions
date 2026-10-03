@@ -122,14 +122,11 @@ def migrate() -> list[str]:
         if path.name in applied:
             continue
         sql = path.read_text(encoding="utf-8")
-        # executescript manages its own transaction; the name is regex-validated
-        # (no quotes possible) so embedding it here is safe.
-        script = (
-            "BEGIN;\n" + sql + "\n"
-            f"INSERT INTO schema_migrations(name, applied_at) VALUES ('{path.name}', {now()});\n"
-            "COMMIT;"
-        )
-        conn().executescript(script)
+        c = conn()
+        # executescript() auto-commits any open transaction first, so wrap the
+        # migration body in its own BEGIN/COMMIT and record it with bound params.
+        c.executescript("BEGIN;\n" + sql + "\nCOMMIT;")
+        c.execute("INSERT INTO schema_migrations(name, applied_at) VALUES (?, ?)", (path.name, now()))
         done.append(path.name)
     return done
 

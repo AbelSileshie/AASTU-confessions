@@ -28,6 +28,9 @@ def redeem_invite(code: str, user_id: int, display: str) -> str | None:
         if not inv:
             return None
         db.execute("UPDATE invites SET used_by=? WHERE code=?", (user_id, code))
+        current = db.one("SELECT role, active FROM staff WHERE user_id=?", (user_id,))
+        if current and current["active"] and ROLE_RANK[current["role"]] >= ROLE_RANK[inv["role"]]:
+            return current["role"]  # never demote via an invite link
         db.execute(
             "INSERT INTO staff(user_id, role, display, added_at, active) VALUES (?,?,?,?,1) "
             "ON CONFLICT(user_id) DO UPDATE SET role=excluded.role, active=1, display=excluded.display",

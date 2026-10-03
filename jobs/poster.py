@@ -75,9 +75,11 @@ def _ad_markup(buttons_json: str | None) -> InlineKeyboardMarkup | None:
         return None
     try:
         btns = json.loads(buttons_json)
-        return InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in btns if b.get("url", "").startswith("https://")])
+        rows = [[InlineKeyboardButton(str(b["text"])[:64], url=b["url"])]
+                for b in btns if isinstance(b, dict) and str(b.get("url", "")).startswith("https://")]
     except (ValueError, KeyError, TypeError):
         return None
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 # ---------------------------------------------------------------------------

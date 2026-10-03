@@ -40,7 +40,7 @@ def update_field(table: str, fields: dict, row_id: int, field: str, raw: str) ->
     except ValueError:
         return False
     # table/field are whitelisted constants, value is parameterised
-    return db.execute(f"UPDATE {table} SET {field}=? WHERE id=?", (value, row_id)) > 0  # noqa: S608
+    return db.execute(f"UPDATE {table} SET {field}=? WHERE id=?", (value, row_id)) > 0  # nosec B608 - whitelisted identifiers
 
 
 def _args(update: Update) -> list[str]:
@@ -143,8 +143,8 @@ async def payout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                              + ", ".join(BANK_FIELDS))
     elif a[0] == "add" and len(a) >= 4:
         bank = a[1].lower()
-        account = "".join(ch for ch in a[2] if ch.isalnum())
-        if bank not in BANK_FIELDS or not (6 <= len(account) <= 20) or not a[3].strip():
+        account = a[2].replace(" ", "")
+        if bank not in BANK_FIELDS or not account.isdigit() or not (6 <= len(account) <= 20) or not a[3].strip():
             await msg.reply_text("Invalid bank, account or holder.")
             return
         db.execute("INSERT INTO payout_accounts(bank, account, holder, sort) VALUES (?,?,?,?)",

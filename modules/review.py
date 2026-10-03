@@ -174,6 +174,17 @@ async def review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _serve(q.message, mod)
         return
 
+    if action == "take":
+        if not has_role(mod, "admin"):
+            await q.answer()
+            return
+        n = db.execute("UPDATE submissions SET claimed_by=?, claimed_at=? WHERE id=?", (mod, db.now(), sub_id))
+        db.audit(mod, "take_over", f"sub:{sub_id}")
+        await q.answer("Claimed" if n else "Already handled")
+        if n:
+            await _serve(q.message, mod)
+        return
+
     sub = _owned(sub_id, mod)
     if not sub:
         await q.answer("Not yours or already handled.", show_alert=True)
@@ -207,9 +218,6 @@ async def review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.answer("Escalated")
         await alert_admins(context, f"🤔 Escalation from moderator for submission #{sub['id']}:\n\n{sub['text']}",
                            reply_markup=kb([[("Take over", "rv", f"take:{sub['id']}")]]))
-    elif action == "take":
-        db.execute("UPDATE submissions SET claimed_by=?, claimed_at=? WHERE id=?", (mod, db.now(), sub["id"]))
-        await q.answer("Claimed")
 
 
 async def _approve(q, sub, mod, context) -> None:

@@ -128,7 +128,7 @@ def require(role: str) -> Callable:
                 if update.callback_query:
                     try:
                         await update.callback_query.answer()
-                    except Exception:  # noqa: BLE001 - never leak existence
+                    except Exception:  # nosec B110 - swallow on purpose: never reveal command existence
                         pass
                 return None
             return await fn(update, context, *a, **kw)
