@@ -85,6 +85,10 @@ async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if adv["blocked"]:
         await msg.reply_text(t(lang, "ads.blocked"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
+    open_orders = db.scalar("SELECT count(*) FROM ads WHERE advertiser_id=? AND status IN ('draft','awaiting_payment','verifying')", (adv["id"],), 0)
+    if open_orders >= cfg("max_open_orders", 2):
+        await msg.reply_text(t(lang, "ads.too_many_open"), reply_markup=kb([[("📢 /myads", "myad", "list")]]))
+        return ConversationHandler.END
     pkgs = db.q("SELECT id, name, price_etb, description FROM packages WHERE enabled=1 ORDER BY sort, id")
     if not pkgs:
         await msg.reply_text(t(lang, "ads.disabled"), reply_markup=nav_keyboard(lang, update.effective_user.id))
@@ -217,6 +221,11 @@ async def preview_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     adv = ensure_advertiser(update.effective_user.id, update.effective_user.full_name or "")
     pkg = _pkg(context)
+    open_orders = db.scalar("SELECT count(*) FROM ads WHERE advertiser_id=? AND status IN ('draft','awaiting_payment','verifying')", (adv["id"],), 0)
+    if open_orders >= cfg("max_open_orders", 2):  # re-check at order time (flow may have been idle)
+        context.user_data.pop("ad", None)
+        await q.message.reply_text(t(lang, "ads.too_many_open"), reply_markup=kb([[("📢 /myads", "myad", "list")]]))
+        return ConversationHandler.END
     ad_id = create_order(adv["id"], pkg, data)
     db.audit(0, "ad_order", f"ad:{ad_id}", f"pkg:{pkg['slug']} price:{pkg['price_etb']}")
     context.user_data.pop("ad", None)

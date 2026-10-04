@@ -61,10 +61,15 @@ channel and add the bot to both. Get the `-100…` ids by forwarding a message f
 First run: the owner (`OWNER_ID`) has every permission. Add staff with `/staff add` and send
 them the invite link. Add receiving accounts with `/payout_accounts add telebirr 09xxxxxxxx "Holder Name"`.
 
+## Dependencies
+
+`requirements.txt` holds the ranges; `requirements.lock` is the exact set verified by the test suite and
+`pip-audit`. Deploy with `pip install -r requirements.lock`. Security model: [SECURITY.md](SECURITY.md).
+
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q            # 193 tests, ~20 s
+.venv/bin/python -m pytest -q            # 196 tests, ~20 s
 .venv/bin/bandit -q -r . -x ./.venv,./tests
 .venv/bin/pip-audit
 ```

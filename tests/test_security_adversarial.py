@@ -273,3 +273,43 @@ async def test_notifications_survive_blocked_user_without_crash(h):
     await h.run_job(poster_job)
     assert db.scalar("SELECT count(*) FROM posts") == 1
     assert db.scalar("SELECT chat_ref FROM users WHERE author=?", (author_hash(STUDENT),)) is None
+
+
+async def test_open_order_cap(h):
+    h.add_payout()
+    for _ in range(2):
+        await h.say(ATTACKER, "/advertise")
+        await h.press(ATTACKER, "Basic post")
+        await h.say(ATTACKER, "Coffee deal for students at the campus café this week only.")
+        await h.press(ATTACKER, "Skip")
+        await h.press(ATTACKER, "Skip")
+        await h.press(ATTACKER, "Place order")
+    assert db.scalar("SELECT count(*) FROM ads") == 2
+    await h.say(ATTACKER, "/advertise")
+    assert "unpaid orders" in h.last(ATTACKER).text
+    assert db.scalar("SELECT count(*) FROM ads") == 2
+
+
+async def test_takedown_request_cooldown(h):
+    await _queue_one(h)
+    await h.say(MOD, "/next")
+    await h.press(MOD, "Approve")
+    h.set("post_interval_sec", 0)
+    await h.run_job(poster_job)
+    for _ in range(3):
+        await h.say(ATTACKER, "/rules")
+        await h.press(ATTACKER, "Request takedown")
+        await h.say(ATTACKER, "1")
+        await h.say(ATTACKER, "spam spam")
+    assert len([c for c in h.tg.calls if c.chat_id == ADMIN_GROUP and "Takedown request" in c.text]) == 1
+    assert any("wait" in t.lower() for t in h.texts(ATTACKER))
+
+
+def test_longest_callback_payloads_fit_telegram_limit():
+    from security import sign_cb
+
+    samples = [("hub", "staff:9999999999:role:moderator"), ("rv", "rejr:99999999:explicit"), ("ada", "manual_ok:99999999"),
+               ("cn", "ask:99999999"), ("word", "99999999:del:block"), ("pkg", "99999999:set:bot_banner_days"),
+               ("cm", "pg:99999999:99999999"), ("mine", "delok:99999999"), ("fr", "post:99999999")]
+    for a, p in samples:
+        assert len(sign_cb(a, p).encode()) <= 64, (a, p)

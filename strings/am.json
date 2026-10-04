@@ -73,5 +73,7 @@
   "mine.live": "✅ #{number} ሆኖ ወጥቷል · 💬 {count}",
   "mine.declined": "❌ አልተፈቀደም ({reason})",
   "mine.deleted": "🗑 ተሰርዟል",
-  "ads.btn_contact": "✉️ አስተዳዳሪን አግኝ"
+  "ads.btn_contact": "✉️ አስተዳዳሪን አግኝ",
+  "ads.too_many_open": "ያልተከፈሉ ትዕዛዞች አሉዎት። አዲስ ከማስገባትዎ በፊት በ/myads ይክፈሉ ወይም ይሰርዙ።",
+  "takedown.cooldown": "በቅርቡ ጥያቄ ልከዋል። እባክዎ ትንሽ ይጠብቁ።"
 }

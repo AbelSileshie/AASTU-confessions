@@ -135,5 +135,7 @@
   "ads.contact_cooldown": "Please wait before sending another message.",
   "ads.myads_title": "📢 Your ads — tap one",
   "ads.btn_pay_again": "💳 Pay / enter reference",
-  "ads.order_status": "Order #{ad_id} · {name} · {price} ETB\\nStatus: {status}"
+  "ads.order_status": "Order #{ad_id} · {name} · {price} ETB\\nStatus: {status}",
+  "ads.too_many_open": "You already have unpaid orders. Pay or cancel them in /myads before placing a new one.",
+  "takedown.cooldown": "You recently sent a takedown request. Please wait a bit before sending another."
 }

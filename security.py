@@ -66,7 +66,7 @@ def new_token(nbytes: int = 16) -> str:
 # Callback data signing  ("action:payload:sig")
 # ---------------------------------------------------------------------------
 
-_SIG_LEN = 10
+_SIG_LEN = 12
 
 
 def _cb_sig(action: str, payload: str) -> str:

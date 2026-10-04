@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 import db
+from config import cfg
 from common import alert_admins, dispatch_nav, show_rules, staff_name, staff_reply, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from i18n import t
 from security import author_hash, require, verify_cb
@@ -81,8 +82,12 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def request_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
     await q.answer()
-    ensure_user(update.effective_user.id)
+    author = ensure_user(update.effective_user.id)
     lang = lang_of(update)
+    last = db.scalar("SELECT last_takedown_req FROM users WHERE author=?", (author,), 0) or 0
+    if db.now() - last < cfg("takedown_cooldown_sec", 600):
+        await q.message.reply_text(t(lang, "takedown.cooldown"), reply_markup=nav_keyboard(lang, update.effective_user.id))
+        return ConversationHandler.END
     await q.message.reply_text(t(lang, "takedown.ask_number"), reply_markup=exit_row(lang, back=("menu", "rules")))
     return ASK_NUMBER
 
@@ -104,8 +109,9 @@ async def request_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     reason = strip_invisible(update.message.text or "")[:300]
     if number is None:
         return ConversationHandler.END
-    requester = author_hash(update.effective_user.id)[:12]
-    db.audit(0, "takedown_request", f"post:{number}", f"{requester} {reason}")
+    requester = author_hash(update.effective_user.id)
+    db.execute("UPDATE users SET last_takedown_req=? WHERE author=?", (db.now(), requester))
+    db.audit(0, "takedown_request", f"post:{number}", f"{requester[:12]} {reason}")
     await alert_admins(context, f"🛑 Takedown request for #{number}\nReason: {reason}", kind="takedowns",
                        reply_markup=kb([[("Take down", "td", f"go:{number}"), ("Ignore", "td", f"ignore:{number}")]]))
     await send_home(update.message, lang, t(lang, "takedown.sent"))
