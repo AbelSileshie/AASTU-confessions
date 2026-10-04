@@ -229,7 +229,7 @@ def callback_update(bot, uid: int, data: str, message: Sent, chat_id: int | None
     msg = {"message_id": message.message_id, "date": int(time.time()),
            "chat": {"id": chat_id, "type": "private" if chat_id > 0 else "supergroup"},
            "from": {"id": BOT_ID, "is_bot": True, "first_name": "Bot"}, "text": message.text or "x"}
-    if message.markup:
+    if message.markup and "inline_keyboard" in message.markup:
         msg["reply_markup"] = message.markup
     if message.method == "sendPhoto":
         msg["caption"] = message.text

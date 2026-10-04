@@ -122,6 +122,35 @@ async def _queue_alert(context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# OP "new comments" digests (grouped, rate-limited)
+# ---------------------------------------------------------------------------
+
+async def comment_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    from common import bot_link, kb, notify_author, user_lang
+
+    interval = cfg("comment_notify_interval_sec", 600)
+    if not interval:
+        return
+    now = db.now()
+    rows = db.q(
+        "SELECT p.author, sum(p.unnotified_comments) n, count(*) posts, min(p.number) number FROM posts p JOIN users u ON u.author=p.author "
+        "WHERE p.unnotified_comments>0 AND p.deleted=0 AND u.last_comment_notify<? GROUP BY p.author LIMIT 50",
+        (now - interval,),
+    )
+    for r in rows:
+        lang = user_lang(r["author"])
+        if r["posts"] == 1:
+            text = t(lang, "notify.new_comments", n=r["n"], number=r["number"])
+            markup = kb([[(t(lang, "comments.open_thread"), bot_link(context, f"c_{r['number']}"))]])
+        else:
+            text = t(lang, "notify.new_comments_multi", n=r["n"], posts=r["posts"])
+            markup = kb([[(t(lang, "menu.mine"), "menu", "mine")]])
+        await notify_author(context, r["author"], text, reply_markup=markup)
+        db.execute("UPDATE posts SET unnotified_comments=0 WHERE author=?", (r["author"],))
+        db.execute("UPDATE users SET last_comment_notify=? WHERE author=?", (now, r["author"]))
+
+
+# ---------------------------------------------------------------------------
 # Comment counter refresh on channel buttons
 # ---------------------------------------------------------------------------
 

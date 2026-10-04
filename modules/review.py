@@ -1,10 +1,9 @@
-"""Manual review.
+"""Manual review (single stage).
 
-Stage 1 (DM, moderators): /next → atomic claim → Approve / Edit / Reject / Ban / Skip / Escalate.
-Stage 2 (admin group topics, admins): approved items become ONE card in 📋 Final review
-(or ⚠️ Flagged when risk words hit) with Post / Edit / Reject. The first admin to act
-wins atomically; the card is edited in place so nobody acts twice. Rejections land in
-🗂 Declined with a Restore button and are purged after `declined_ttl_hours`.
+Moderators: /next → atomic claim → Approve / Edit / Reject / Ban / Skip / Escalate.
+Approve publishes. Risk-flagged items still publish, but a notice card lands in the
+⚠️ Flagged topic with a one-tap Take down (see jobs/poster.py). Rejections land in
+🗂 Declined (full text, Restore button) and are purged after `declined_ttl_hours`.
 """
 from __future__ import annotations
 
@@ -15,15 +14,14 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import alert_admins, category, fmt_ts, is_private_chat, kb, notify_author, reasons_kb, user_lang
+from common import alert_admins, category, pending_clear, pending_get, pending_set, staff_reply, fmt_ts, is_private_chat, kb, notify_author, reasons_kb, staff_name, user_lang
 from config import cfg
 from i18n import t
-from security import has_role, require, role_of, verify_cb
+from security import has_role, require, verify_cb
 from textfilter import check_text, highlight, strip_invisible
 
 REJECT_REASONS = ("names", "explicit", "spam", "unclear", "other")
 PERMANENT = -1
-SNIPPET = 300
 
 
 # ---------------------------------------------------------------------------
@@ -48,29 +46,19 @@ def release(submission_id: int) -> None:
     db.execute("UPDATE submissions SET claimed_by=NULL, claimed_at=NULL WHERE id=?", (submission_id,))
 
 
-def stage_for(hits: list[str], approver_role: str) -> str:
-    """Where an approved item goes next (pure)."""
-    if hits:
-        return "flagged"
-    if cfg("final_review", True) and approver_role not in ("admin", "owner"):
-        return "final"
-    return "ready"
-
-
-def approve(sub: dict, moderator_id: int) -> tuple[int, str]:
-    """Move a submission to the outbox at the right stage. Returns (outbox id, stage)."""
-    hits = json.loads(sub.get("risk_hits") or "[]")
-    stage = stage_for(hits, role_of(moderator_id))
+def approve(sub: dict, moderator_id: int) -> int:
+    """Move a submission to the outbox, ready to post. Returns the outbox id."""
+    hits = sub.get("risk_hits") or "[]"
     now = db.now()
     with db.tx():
         out_id = db.execute(
             "INSERT INTO outbox(kind, author, category_id, text, approved_by, approved_at, stage, risk_hits) "
-            "VALUES ('confession',?,?,?,?,?,?,?)",
-            (sub["author"], sub["category_id"], sub["text"], moderator_id, now, stage, json.dumps(hits)),
+            "VALUES ('confession',?,?,?,?,?,'ready',?)",
+            (sub["author"], sub["category_id"], sub["text"], moderator_id, now, hits),
         )
         db.execute("DELETE FROM submissions WHERE id=?", (sub["id"],))
-    db.audit(moderator_id, "approve", f"sub:{sub['id']}", f"outbox:{out_id} stage:{stage}")
-    return out_id, stage
+    db.audit(moderator_id, "approve", f"sub:{sub['id']}", f"outbox:{out_id}")
+    return out_id
 
 
 def decline(item: dict, actor: int, reason: str, source: str) -> int:
@@ -114,15 +102,6 @@ def strike(author: str, moderator_id: int, reason: str) -> int:
     return until
 
 
-def claim_final(outbox_id: int, admin_id: int) -> bool:
-    """Atomic stage-2 approval: exactly one admin wins."""
-    row = db.one("UPDATE outbox SET stage='ready', final_by=?, final_at=? WHERE id=? AND stage IN ('final','flagged') RETURNING id",
-                 (admin_id, db.now(), outbox_id))
-    if row:
-        db.audit(admin_id, "final_post", f"outbox:{outbox_id}")
-    return row is not None
-
-
 # ---------------------------------------------------------------------------
 # Cards
 # ---------------------------------------------------------------------------
@@ -133,11 +112,6 @@ def _strikes(author: str) -> int:
 
 def _queue_size() -> int:
     return db.scalar("SELECT count(*) FROM submissions", default=0) or 0
-
-
-def _name(user_id: int | None) -> str:
-    row = db.one("SELECT display FROM staff WHERE user_id=?", (user_id,)) if user_id else None
-    return (row["display"] if row and row["display"] else str(user_id or "?"))[:24]
 
 
 def render_card(sub: dict, queue_size: int) -> str:
@@ -170,24 +144,9 @@ def ban_kb(sub_id: int):
                [("⬅️ Back", "rv", f"show:{sub_id}")]])
 
 
-def render_final_card(item: dict) -> str:
-    hits = json.loads(item.get("risk_hits") or "[]")
-    cat = category(item.get("category_id"))
-    text = item["text"]
-    body = highlight(text if len(text) <= SNIPPET else text[:SNIPPET] + "…", hits)
-    head = "⚠️ FLAGGED · " if hits else ""
-    return (f"{head}{cat['label']} · by {_name(item['approved_by'])} · strikes {_strikes(item['author'])}\n"
-            f"────────\n{body}")
-
-
-def final_kb(outbox_id: int):
-    s = str(outbox_id)
-    return kb([[("✅ Post", "fr", f"post:{s}"), ("✏️ Edit", "fr", f"edit:{s}"), ("❌ Reject", "fr", f"rej:{s}")]])
-
-
 def render_declined_card(row: dict) -> str:
     cat = category(row["category_id"])
-    return (f"❌ {cat['label']} · {t('en', 'reject.' + (row['reason'] or 'other'))} · by {_name(row['declined_by'])}\n"
+    return (f"❌ {cat['label']} · {t('en', 'reject.' + (row['reason'] or 'other'))} · by {staff_name(row['declined_by'])}\n"
             f"────────\n{row['text']}")
 
 
@@ -197,16 +156,6 @@ def declined_kb(declined_id: int):
 
 async def _send_card(message, sub: dict) -> None:
     await message.reply_text(render_card(sub, _queue_size()), reply_markup=card_kb(sub["id"]))
-
-
-async def post_final_card(context, outbox_id: int) -> None:
-    item = db.one("SELECT * FROM outbox WHERE id=?", (outbox_id,))
-    if not item:
-        return
-    kind = "flagged" if item["stage"] == "flagged" else "review"
-    msg = await alert_admins(context, render_final_card(dict(item)), kind=kind, reply_markup=final_kb(outbox_id))
-    if msg:
-        db.execute("UPDATE outbox SET group_msg_id=? WHERE id=?", (msg.message_id, outbox_id))
 
 
 async def post_declined_card(context, declined_id: int) -> None:
@@ -303,14 +252,18 @@ async def review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if action == "show":
+        pending_clear(context, "editing")
         await q.answer()
-        await q.message.edit_text(render_card(sub, _queue_size()), reply_markup=card_kb(sub["id"]))
+        try:
+            await q.message.edit_text(render_card(sub, _queue_size()), reply_markup=card_kb(sub["id"]))
+        except TelegramError:
+            await _send_card(q.message, sub)
     elif action == "ok":
         await _approve(q, sub, mod, context)
     elif action == "edit":
-        context.user_data["editing"] = ("sub", sub["id"])
+        pending_set(context, "editing", ("sub", sub["id"]), q.message.chat_id)
         await q.answer()
-        await q.message.reply_text(f"Send the corrected text for #{sub['id']} (or /cancel).")
+        await q.message.reply_text(f"Send the corrected text for #{sub['id']}.", reply_markup=kb([[("✖️ Cancel edit", "rv", f"show:{sub['id']}")]]))
     elif action == "rej":
         await q.answer()
         await q.message.edit_reply_markup(reply_markup=_reasons("rv", sub["id"], ("rv", f"show:{sub['id']}")))
@@ -328,7 +281,7 @@ async def review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.message.edit_reply_markup(reply_markup=kb([[("➡️ Next", "rv", "next:0")]]))
     elif action == "esc":
         await q.answer("Escalated")
-        await alert_admins(context, f"🤔 Escalation from {_name(mod)} for submission #{sub['id']}:\n\n{sub['text']}",
+        await alert_admins(context, f"🤔 Escalation from {staff_name(mod)} for submission #{sub['id']}:\n\n{sub['text']}",
                            kind="flagged", reply_markup=kb([[("Take over", "rv", f"take:{sub['id']}")]]))
 
 
@@ -337,12 +290,10 @@ async def _approve(q, sub, mod, context) -> None:
     if hits and cfg("flagged_requires_admin", False) and not has_role(mod, "admin"):
         await q.answer("Flagged items need an admin. Use Escalate.", show_alert=True)
         return
-    out_id, stage = approve(sub, mod)
-    if stage != "ready":
-        await post_final_card(context, out_id)
+    approve(sub, mod)
     await q.answer("Approved")
-    where = {"ready": "queued for posting", "final": "sent to admins for final review", "flagged": "sent to admins (flagged)"}[stage]
-    await q.message.edit_text(f"✅ Approved #{sub['id']} — {where}", reply_markup=kb([[("➡️ Next", "rv", "next:0")]]))
+    note = " (flagged — admins get a notice when it posts)" if hits else ""
+    await q.message.edit_text(f"✅ Approved #{sub['id']} — queued for posting{note}", reply_markup=kb([[("➡️ Next", "rv", "next:0")]]))
 
 
 async def _reject(q, sub, mod, context, reason: str) -> None:
@@ -373,57 +324,6 @@ async def _ban(q, sub, mod, context, permanent: bool) -> None:
     await q.message.edit_text(f"🚫 #{sub['id']} rejected; author: {until_txt}", reply_markup=kb([[("➡️ Next", "rv", "next:0")]]))
 
 
-# ---------------------------------------------------------------------------
-# Stage 2 handlers (admin group cards)
-# ---------------------------------------------------------------------------
-
-@require("admin")
-async def final_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    parsed = verify_cb(q.data)
-    if not parsed:
-        await q.answer()
-        return
-    parts = parsed[1].split(":")
-    action, out_id = parts[0], int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-    extra = parts[2] if len(parts) > 2 else ""
-    admin = update.effective_user.id
-    item = db.one("SELECT * FROM outbox WHERE id=?", (out_id,))
-    if not item or item["stage"] == "ready":
-        await q.answer("Already handled.", show_alert=True)
-        done_by = _name(item["final_by"]) if item else "?"
-        await _finish_card(q, f"✅ posted by {done_by}")
-        return
-
-    if action == "post":
-        if claim_final(out_id, admin):
-            await q.answer("Posting")
-            await _finish_card(q, f"✅ approved for posting by {_name(admin)}")
-        else:
-            await q.answer("Someone else just handled this.", show_alert=True)
-    elif action == "show":
-        await q.answer()
-        try:
-            await q.message.edit_text(render_final_card(dict(item)), reply_markup=final_kb(out_id))
-        except TelegramError:
-            pass
-    elif action == "edit":
-        context.user_data["editing"] = ("out", out_id)
-        await q.answer()
-        await q.message.reply_text(f"{_name(admin)}: reply here with the corrected text (or /cancel).\n\nCurrent:\n{item['text']}")
-    elif action == "rej":
-        await q.answer()
-        await q.message.edit_reply_markup(reply_markup=_reasons("fr", out_id, ("fr", f"show:{out_id}")))
-    elif action == "rejr":
-        reason = extra if extra in REJECT_REASONS else "other"
-        did = decline(dict(item), admin, reason, "out")
-        await post_declined_card(context, did)
-        lang = user_lang(item["author"])
-        await notify_author(context, item["author"], t(lang, "notify.rejected", reason=t(lang, f"reject.{reason}")))
-        await q.answer("Rejected")
-        await _finish_card(q, f"❌ rejected ({reason}) by {_name(admin)}")
-
-
 @require("admin")
 async def declined_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
@@ -434,7 +334,7 @@ async def declined_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     action, _, did = parsed[1].partition(":")
     if action == "restore" and did.isdigit() and restore(int(did), update.effective_user.id):
         await q.answer("Back in the queue")
-        await _finish_card(q, f"↩️ restored to queue by {_name(update.effective_user.id)}")
+        await _finish_card(q, f"↩️ restored to queue by {staff_name(update.effective_user.id)}")
     else:
         await q.answer("Gone.", show_alert=True)
         await _finish_card(q, "⌛ no longer available")
@@ -446,10 +346,13 @@ async def declined_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @require("moderator")
 async def edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    editing = context.user_data.get("editing")
+    editing = pending_get(context, "editing", update.effective_chat.id)
     if not editing:
         return
     kind, item_id = editing
+    if kind != "sub":
+        pending_clear(context, "editing")
+        return
     actor = update.effective_user.id
     new_text = strip_invisible(update.message.text or "").strip()
     result = check_text(new_text, min_len=cfg("min_len", 20), max_len=cfg("max_len", 2000), blocklist=[], risklist=[])
@@ -459,53 +362,32 @@ async def edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if kind == "sub":
         sub = _owned(str(item_id), actor)
         if not sub:
-            context.user_data.pop("editing", None)
+            pending_clear(context, "editing")
             return
         db.execute("UPDATE submissions SET text=? WHERE id=?", (new_text, item_id))
         sub["text"] = new_text
-        context.user_data.pop("editing", None)
+        pending_clear(context, "editing")
         db.audit(actor, "edit", f"sub:{item_id}")
         await _send_card(update.message, sub)
-        return
-    # outbox edit from the group: admins only, item must still be awaiting final review
-    if not has_role(actor, "admin"):
-        return
-    item = db.one("SELECT * FROM outbox WHERE id=? AND stage IN ('final','flagged')", (item_id,))
-    context.user_data.pop("editing", None)
-    if not item:
-        await update.message.reply_text("That item was already handled.")
-        return
-    db.execute("UPDATE outbox SET text=? WHERE id=?", (new_text, item_id))
-    db.audit(actor, "edit", f"outbox:{item_id}")
-    env = context.bot_data["env"]
-    if item["group_msg_id"]:
-        try:
-            await context.bot.edit_message_text(render_final_card({**dict(item), "text": new_text}), env.admin_group_id,
-                                                item["group_msg_id"], reply_markup=final_kb(item_id))
-        except TelegramError:
-            pass
-    await update.message.reply_text("Updated. Use the card's buttons to Post or Reject.")
-
-
 @require("moderator")
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.user_data.pop("editing", None):
+    if pending_clear(context, "editing"):
         await update.message.reply_text("Edit cancelled.")
 
 
 @require("admin")
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        await update.message.reply_text("Usage: /unban <author prefix>")
+        await staff_reply(update, "Usage: /unban <author prefix>")
         return
     prefix = context.args[0][:64]
     rows = db.q("SELECT author FROM users WHERE author LIKE ? || '%' AND (banned_until>? OR banned_until=-1)", (prefix, db.now()))
     if len(rows) != 1:
-        await update.message.reply_text(f"{len(rows)} matches; be more specific.")
+        await staff_reply(update, f"{len(rows)} matches; be more specific.")
         return
     db.execute("UPDATE users SET banned_until=0, strikes=0 WHERE author=?", (rows[0]["author"],))
     db.audit(update.effective_user.id, "unban", f"author:{prefix}")
-    await update.message.reply_text("Unbanned.")
+    await staff_reply(update, "Unbanned.")
 
 
 def register(app: Application) -> None:
@@ -513,7 +395,6 @@ def register(app: Application) -> None:
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^📋 Queue$") & filters.ChatType.PRIVATE, next_cmd))
     app.add_handler(CommandHandler("unban", unban))
     app.add_handler(CallbackQueryHandler(review_cb, pattern=r"^rv:"))
-    app.add_handler(CallbackQueryHandler(final_cb, pattern=r"^fr:"))
     app.add_handler(CallbackQueryHandler(declined_cb, pattern=r"^dc:"))
     app.add_handler(CommandHandler("cancel", cancel_edit), group=2)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text), group=2)

@@ -168,7 +168,8 @@ async def write_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     with db.tx():
         db.execute("INSERT INTO comments(number, author, alias, reply_to, text, created) VALUES (?,?,?,?,?,?)",
                    (number, author, alias, reply_to, text, now))
-        db.execute("UPDATE posts SET comment_count=comment_count+1 WHERE number=?", (number,))
+        db.execute("UPDATE posts SET comment_count=comment_count+1, unnotified_comments=unnotified_comments+CASE WHEN ?='OP' THEN 0 ELSE 1 END WHERE number=?",
+                   (alias, number))
         db.execute("UPDATE users SET last_comment=? WHERE author=?", (now, author))
     context.user_data.pop("cm_number", None)
     context.user_data.pop("cm_reply", None)

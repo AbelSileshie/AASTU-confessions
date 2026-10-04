@@ -5,11 +5,11 @@ from telegram import MenuButtonCommands, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-from common import dispatch_nav, ensure_user, is_private_chat, kb, lang_of, main_menu, nav_action, nav_keyboard, nav_regex, send_home, show_browse, show_help, show_home, show_lang, show_rules
+from common import dispatch_nav, pending_get, ensure_user, is_private_chat, kb, lang_of, main_menu, nav_action, nav_keyboard, nav_regex, send_home, show_browse, show_help, show_home, show_lang, show_mine, show_rules
 import db
 from config import cfg
 from i18n import SUPPORTED, t
-from security import verify_cb
+from security import author_hash, verify_cb
 from textfilter import strip_invisible
 
 DEEP_LINK_PREFIXES = ("inv_", "c_")
@@ -62,6 +62,8 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await show_browse(q.message, context, lang)
     elif what == "help":
         await show_help(q.message, lang)
+    elif what == "mine":
+        await show_mine(q.message, lang, author_hash(update.effective_user.id))
 
 
 async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -127,23 +129,24 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("rules", rules))
     app.add_handler(CommandHandler("lang", lang_cmd))
-    app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^menu:(home|rules|lang|browse|help):"))
+    app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^menu:(home|rules|lang|browse|help|mine):"))
     app.add_handler(CallbackQueryHandler(lang_cb, pattern=r"^lang:"))
 
 
 # keys other modules keep in user_data while a stateful (non-conversation) step is pending
-_PENDING_KEYS = ("editing", "setting_key", "hub_input")
+_PENDING_KEYS = ("editing", "setting_key", "hub_input", "ad_reply")
 
 
-def _idle(context) -> bool:
-    return not any(k in context.user_data for k in _PENDING_KEYS)
+def _idle(context, chat_id: int) -> bool:
+    """No fresh pending text-input state for this chat (stale ones are dropped)."""
+    return not any(pending_get(context, k, chat_id) is not None for k in _PENDING_KEYS)
 
 
 def register_late(app: Application) -> None:
     """Called after every module registered: these only fire when nothing else matched."""
 
     async def _text(update, context):
-        if _idle(context):
+        if _idle(context, update.effective_chat.id):
             await unknown_text(update, context)
 
     async def _cmd(update, context):

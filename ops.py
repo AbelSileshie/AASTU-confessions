@@ -219,7 +219,6 @@ def gather_stats(now: int) -> dict:
     return {
         "queue": db.scalar("SELECT count(*) FROM submissions", default=0),
         "claimed": db.scalar("SELECT count(*) FROM submissions WHERE claimed_by IS NOT NULL", default=0),
-        "final": db.scalar("SELECT count(*) FROM outbox WHERE stage IN ('final','flagged')", default=0),
         "outbox": db.scalar("SELECT count(*) FROM outbox WHERE stage='ready'", default=0),
         "declined": db.scalar("SELECT count(*) FROM declined", default=0),
         "posted_today": db.scalar("SELECT count(*) FROM posts WHERE posted_at>?", (day,), 0),
@@ -231,5 +230,21 @@ def gather_stats(now: int) -> dict:
         "last_post_at": int(db.scalar("SELECT v FROM meta WHERE k='last_post_at'", default="0") or 0),
         "last_backup_at": int(db.scalar("SELECT v FROM meta WHERE k='last_backup_at'", default="0") or 0),
         "mods_today": [dict(r) for r in db.q(
-            "SELECT actor, count(*) n FROM audit WHERE action IN ('approve','reject','final_post') AND at>? GROUP BY actor ORDER BY n DESC", (day,))],
+            "SELECT actor, count(*) n FROM audit WHERE action IN ('approve','reject') AND at>? GROUP BY actor ORDER BY n DESC", (day,))],
     }
+
+
+def health_text(now: int) -> str:
+    """The one stats/health rendering used by /stats, 📊 Stats and ⚙️ Admin → Health."""
+    s = gather_stats(now)
+
+    def age(ts: int) -> str:
+        return f"{(now - ts) // 60} min ago" if ts else "never"
+
+    names = {r["user_id"]: r["display"] or str(r["user_id"]) for r in db.q("SELECT user_id, display FROM staff")}
+    mods = "\n".join(f"  {names.get(m['actor'], m['actor'])}: {m['n']}" for m in s["mods_today"]) or "  –"
+    return (f"🩺 Status\nQueue {s['queue']} (claimed {s['claimed']}) · Ready to post {s['outbox']} · Declined {s['declined']}\n"
+            f"Last post: {age(s['last_post_at'])} · Last backup: {age(s['last_backup_at'])}\n"
+            f"Posted {s['posted_today']} today / {s['posted_7d']} in 7d · Comments today {s['comments_today']}\n"
+            f"Pending ads {s['pending_ads']} · Revenue 30d {s['revenue_30d']} ETB · On shift {s['on_shift']}\n"
+            f"Decisions today:\n{mods}")

@@ -10,7 +10,7 @@ from telegram.error import RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
 import db
-from common import alert_admins, bot_link, category, notify_author, post_link, user_lang
+from common import alert_admins, bot_link, category, kb, notify_author, post_link, staff_name, user_lang
 from config import cfg
 from i18n import t
 
@@ -121,10 +121,12 @@ async def _post_confession(context, item: dict, now: int) -> None:
         env.channel_id, text, entities=entities, reply_markup=comments_button(context, number, 0),
         disable_web_page_preview=True,
     )
+    hits = json.loads(item.get("risk_hits") or "[]")
     with db.tx():
         db.execute(
-            "INSERT INTO posts(number, kind, channel_msg_id, author, category_id, posted_at) VALUES (?,?,?,?,?,?)",
-            (number, item["kind"], msg.message_id, item["author"], item["category_id"], now),
+            "INSERT INTO posts(number, kind, channel_msg_id, author, category_id, posted_at, approved_by, risk_hits) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (number, item["kind"], msg.message_id, item["author"], item["category_id"], now, item.get("approved_by"), json.dumps(hits)),
         )
         db.execute("DELETE FROM outbox WHERE id=?", (item["id"],))
         _set_meta("last_post_at", now)
@@ -134,6 +136,14 @@ async def _post_confession(context, item: dict, now: int) -> None:
         await notify_author(context, item["author"],
                             t(lang, "notify.live", number=number, link=post_link(context, msg.message_id)),
                             disable_web_page_preview=True)
+    if hits:
+        await alert_admins(
+            context,
+            f"⚠️ Flagged confession #{number} is live (words: {', '.join(hits)}) · approved by {staff_name(item.get('approved_by'))}\n"
+            f"{post_link(context, msg.message_id)}\n\n{item['text'][:400]}",
+            kind="flagged", disable_web_page_preview=True,
+            reply_markup=kb([[("🛑 Take down", "td", f"go:{number}"), ("✅ Fine", "td", f"ignore:{number}")]]),
+        )
 
 
 async def _post_ad(context, item: dict, now: int) -> None:

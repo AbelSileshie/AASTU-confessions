@@ -21,7 +21,7 @@ import db
 import security
 from config import load_env
 from jobs.backup import backup_job
-from jobs.housekeeping import counter_refresh_job, daily_purge_job, housekeeping_job
+from jobs.housekeeping import comment_digest_job, counter_refresh_job, daily_purge_job, housekeeping_job
 from jobs.poster import poster_job, unpin_job
 from modules import MODULES
 from payments import handle_verify_webhook
@@ -68,6 +68,7 @@ def register_jobs(app: Application) -> None:
     jq.run_repeating(poster_job, interval=15, first=10, name="poster")
     jq.run_repeating(housekeeping_job, interval=60, first=20, name="housekeeping")
     jq.run_repeating(counter_refresh_job, interval=60, first=30, name="counters")
+    jq.run_repeating(comment_digest_job, interval=60, first=45, name="comment_digest")
     jq.run_repeating(unpin_job, interval=300, first=60, name="unpin")
     jq.run_daily(daily_purge_job, time=dtime(hour=2, minute=30, tzinfo=timezone.utc), name="purge")
     jq.run_daily(backup_job, time=dtime(hour=3, minute=0, tzinfo=timezone.utc), name="backup")

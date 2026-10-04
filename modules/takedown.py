@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 import db
-from common import alert_admins, dispatch_nav, show_rules, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
+from common import alert_admins, dispatch_nav, show_rules, staff_name, staff_reply, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from i18n import t
 from security import author_hash, require, verify_cb
 from textfilter import strip_invisible
@@ -37,6 +37,12 @@ async def take_down(context: ContextTypes.DEFAULT_TYPE, number: int, actor: int,
     db.audit(actor if not by_author else 0, "takedown" if not by_author else "author_delete", f"post:{number}", reason[:200])
     if not by_author and post["author"]:
         await notify_author(context, post["author"], t(user_lang(post["author"]), "notify.deleted", number=number))
+    approver = post["approved_by"]
+    if not by_author and approver and approver != actor:
+        try:
+            await context.bot.send_message(approver, f"ℹ️ Confession #{number}, which you approved, was taken down by {staff_name(actor)}. Reason: {reason[:200]}")
+        except TelegramError:
+            pass
     return True
 
 
@@ -44,11 +50,11 @@ async def take_down(context: ContextTypes.DEFAULT_TYPE, number: int, actor: int,
 async def takedown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     number = parse_int(context.args[0]) if context.args else None
     if number is None:
-        await update.message.reply_text("Usage: /takedown <number> <reason>")
+        await staff_reply(update, "Usage: /takedown <number> <reason>")
         return
     reason = " ".join(context.args[1:]) or "moderator"
     ok = await take_down(context, number, update.effective_user.id, reason)
-    await update.message.reply_text(f"Taken down #{number}." if ok else "Not found or already deleted.")
+    await staff_reply(update, f"Taken down #{number}." if ok else "Not found or already deleted.")
 
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -135,13 +141,37 @@ async def takedown_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if action == "go" and number is not None:
         ok = await take_down(context, number, update.effective_user.id, "takedown request")
         await q.answer("Done" if ok else "Already gone")
-        await q.message.edit_text(q.message.text + f"\n\n✅ taken down by {update.effective_user.id}")
+        await q.message.edit_text(q.message.text + f"\n\n🛑 taken down by {staff_name(update.effective_user.id)}")
     else:
-        await q.answer("Ignored")
-        await q.message.edit_text(q.message.text + f"\n\n⏭ ignored by {update.effective_user.id}")
+        await q.answer("Noted")
+        await q.message.edit_text(q.message.text + f"\n\n✅ reviewed by {staff_name(update.effective_user.id)}, left up")
+
+
+async def mine_delete_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """📝 My confessions → 🗑 Delete #N → confirm → author takedown."""
+    q = update.callback_query
+    parsed = verify_cb(q.data)
+    await q.answer()
+    if not parsed:
+        return
+    action, _, num = parsed[1].partition(":")
+    number = parse_int(num)
+    lang = lang_of(update)
+    author = author_hash(update.effective_user.id)
+    if number is None or not db.one("SELECT 1 FROM posts WHERE number=? AND author=? AND deleted=0", (number, author)):
+        await q.message.reply_text(t(lang, "delete.not_yours"), reply_markup=nav_keyboard(lang, update.effective_user.id))
+        return
+    if action == "del":
+        await q.message.reply_text(f"Delete #{number}? This removes it from the channel and hides its comments.",
+                                   reply_markup=kb([[("🗑 Yes, delete", "mine", f"delok:{number}"), (t(lang, "menu.back"), "menu", "mine")]]))
+        return
+    if action == "delok":
+        await take_down(context, number, 0, "author", by_author=True)
+        await send_home(q.message, lang, t(lang, "delete.done", number=number))
 
 
 def register(app: Application) -> None:
+    app.add_handler(CallbackQueryHandler(mine_delete_cb, pattern=r"^mine:(del|delok):"))
     app.add_handler(CommandHandler("takedown", takedown_cmd))
     app.add_handler(CommandHandler("delete", delete_cmd))
     app.add_handler(CallbackQueryHandler(takedown_cb, pattern=r"^td:(go|ignore):"))

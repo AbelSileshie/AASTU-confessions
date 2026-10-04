@@ -381,19 +381,19 @@ async def _submit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, la
         if acc.status in ("failed", "duplicate") and left <= 0:
             db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (ad["id"],))
             await alert_admins(context, f"🧾 Ad #{ad['id']}: {attempts} failed payment attempts; manual review.", kind="ads")
-            await send_home(update.message, lang, t(lang, "ads.needs_review"))
+            await update.message.reply_text(t(lang, "ads.needs_review"), reply_markup=kb([[(t(lang, "ads.btn_contact"), "adc", str(ad["id"]))]]))
         else:
-            final = acc.status not in ("failed", "duplicate")
-            if final:
-                await send_home(update.message, lang, outcome_message(lang, acc, ad["price_etb"], attempts_left=left))
-            else:
-                await update.message.reply_text(outcome_message(lang, acc, ad["price_etb"], attempts_left=left))
-            if acc.status in ("failed", "duplicate"):
+            msg_text = outcome_message(lang, acc, ad["price_etb"], attempts_left=left)
+            if acc.status in ("mismatch", "needs_review"):
+                await alert_admins(context, f"🧾 Ad #{ad['id']} payment needs review ({acc.reason}). Use /ads.", kind="ads")
+                await update.message.reply_text(msg_text, reply_markup=kb([[(t(lang, "ads.btn_contact"), "adc", str(ad["id"]))]]))
+            elif acc.status == "verified":
+                await send_home(update.message, lang, msg_text)
+            else:  # failed / duplicate: show the pay screen again
+                await update.message.reply_text(msg_text)
                 screen = pay_screen(ad["id"], ad["price_etb"], lang)
                 if screen:
                     await update.message.reply_text(screen[0], reply_markup=screen[1])
-        if acc.status in ("mismatch", "needs_review"):
-            await alert_admins(context, f"🧾 Ad #{ad['id']} payment needs review ({acc.reason}). Use /ads.", kind="ads")
     elif kind in ("queued", "retry"):
         await send_home(update.message, lang, t(lang, "ads.queued"))
     elif kind == "invalid":
@@ -429,16 +429,106 @@ async def pay_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # /myads
 # ---------------------------------------------------------------------------
 
-async def myads(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_private_chat(update):
-        return
-    rows = db.q("SELECT a.id, a.status, a.price_etb, p.name FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id "
-                "JOIN packages p ON p.id=a.package_id WHERE adv.user_id=? ORDER BY a.id DESC LIMIT 10", (update.effective_user.id,))
+def _my_orders(user_id: int) -> list[dict]:
+    return [dict(r) for r in db.q(
+        "SELECT a.id, a.status, a.price_etb, p.name FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id "
+        "JOIN packages p ON p.id=a.package_id WHERE adv.user_id=? ORDER BY a.id DESC LIMIT 8", (user_id,))]
+
+
+async def show_myads(message, user_id: int, lang: str) -> None:
+    rows = _my_orders(user_id)
     if not rows:
-        await update.message.reply_text("You have no ads yet. Tap 📢 Advertise to start.", reply_markup=nav_keyboard(lang_of(update), update.effective_user.id))
+        await message.reply_text("You have no ads yet. Tap 📢 Advertise to start.", reply_markup=nav_keyboard(lang, user_id))
         return
-    await update.message.reply_text("\n".join(f"#{r['id']} · {r['name']} · {r['price_etb']} ETB · {r['status']}" for r in rows),
-                                    reply_markup=nav_keyboard(lang_of(update), update.effective_user.id))
+    buttons = [[(f"#{r['id']} · {r['name']} · {r['status'].replace('_', ' ')}", "myad", f"show:{r['id']}")] for r in rows]
+    buttons.append([(t(lang, "menu.back"), "menu", "home")])
+    await message.reply_text(t(lang, "ads.myads_title"), reply_markup=kb(buttons))
+
+
+async def myads(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if is_private_chat(update):
+        await show_myads(update.message, update.effective_user.id, lang_of(update))
+
+
+async def myad_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """myad:show:<id> → order status with the right actions; myad:list → back."""
+    q = update.callback_query
+    parsed = verify_cb(q.data)
+    await q.answer()
+    lang = lang_of(update)
+    uid = update.effective_user.id
+    if not parsed or parsed[1] == "list":
+        await show_myads(q.message, uid, lang)
+        return
+    _, _, ad_id_s = parsed[1].partition(":")
+    ad = _own_ad(int(ad_id_s), uid) if ad_id_s.isdigit() else None
+    if not ad:
+        await show_myads(q.message, uid, lang)
+        return
+    pkg = db.one("SELECT name FROM packages WHERE id=?", (ad["package_id"],))
+    rows = []
+    if ad["status"] == "awaiting_payment":
+        rows.append([(t(lang, "ads.btn_pay_again"), "ad", f"paid:{ad['id']}"), (t(lang, "ads.btn_cancel_order"), "ad", f"cancel:{ad['id']}")])
+    if ad["status"] in ("awaiting_payment", "verifying", "needs_review", "paid", "refund_due"):
+        rows.append([(t(lang, "ads.btn_contact"), "adc", str(ad["id"]))])
+    rows.append([(t(lang, "menu.back"), "myad", "list")])
+    await q.message.reply_text(t(lang, "ads.order_status", ad_id=ad["id"], name=pkg["name"] if pkg else "?", price=ad["price_etb"],
+                                 status=ad["status"].replace("_", " ")), reply_markup=kb(rows))
+
+
+# ---------------------------------------------------------------------------
+# Contact admin (advertiser → 💰 Ads topic), rate-limited
+# ---------------------------------------------------------------------------
+
+CONTACT = 0
+
+
+async def contact_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    parsed = verify_cb(q.data)
+    await q.answer()
+    lang = lang_of(update)
+    uid = update.effective_user.id
+    ad = _own_ad(int(parsed[1]), uid) if parsed and parsed[1].isdigit() else None
+    if not ad:
+        return ConversationHandler.END
+    from security import author_hash
+    last = db.scalar("SELECT last_contact FROM users WHERE author=?", (author_hash(uid),), 0) or 0
+    if db.now() - last < cfg("contact_cooldown_sec", 600):
+        await q.message.reply_text(t(lang, "ads.contact_cooldown"), reply_markup=nav_keyboard(lang, uid))
+        return ConversationHandler.END
+    context.user_data["contact_ad"] = ad["id"]
+    await q.message.reply_text(t(lang, "ads.contact_ask", ad_id=ad["id"]), reply_markup=kb([[(t(lang, "menu.cancel"), "nav", "cancel")]]))
+    return CONTACT
+
+
+async def contact_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    from common import ensure_user
+    lang = lang_of(update)
+    uid = update.effective_user.id
+    ad_id = context.user_data.pop("contact_ad", None)
+    text = strip_invisible(update.message.text or "").strip()[:800]
+    if ad_id is None or not text:
+        return ConversationHandler.END
+    author = ensure_user(uid)
+    db.execute("UPDATE users SET last_contact=? WHERE author=?", (db.now(), author))
+    summary = db.one("SELECT a.status, a.price_etb, p.reference, p.status pstatus FROM ads a LEFT JOIN payments p ON p.ad_id=a.id "
+                     "WHERE a.id=? ORDER BY p.id DESC LIMIT 1", (ad_id,))
+    await alert_admins(context, f"✉️ Advertiser message about ad #{ad_id} ({summary['status']}, {summary['price_etb']} ETB, "
+                                f"last payment {summary['pstatus'] or '-'} {summary['reference'] or ''}):\n\n{text}",
+                       kind="ads", reply_markup=kb([[("↩️ Reply", "adr", str(ad_id))]]))
+    db.audit(0, "ad_contact", f"ad:{ad_id}")
+    await send_home(update.message, lang, t(lang, "ads.contact_sent"))
+    return ConversationHandler.END
+
+
+async def contact_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("contact_ad", None)
+    lang = lang_of(update)
+    if update.callback_query:
+        await update.callback_query.answer()
+    await send_home(update.effective_message, lang, t(lang, "nav.cancelled"))
+    return ConversationHandler.END
 
 
 def _advertise_label_regex() -> str:
@@ -478,3 +568,10 @@ def register(app: Application) -> None:
         name="pay",
     ))
     app.add_handler(CommandHandler("myads", myads))
+    app.add_handler(CallbackQueryHandler(myad_cb, pattern=r"^myad:"))
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(contact_start, pattern=r"^adc:")],
+        states={CONTACT: [MessageHandler(label_filter, contact_cancel), MessageHandler(filters.TEXT & ~filters.COMMAND, contact_text)]},
+        fallbacks=[CallbackQueryHandler(contact_cancel, pattern=r"^nav:cancel:"), CommandHandler("cancel", contact_cancel), CommandHandler("start", contact_cancel)],
+        conversation_timeout=600, name="ad_contact",
+    ))

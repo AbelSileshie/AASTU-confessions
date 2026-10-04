@@ -75,8 +75,8 @@ async def notify_author(context: ContextTypes.DEFAULT_TYPE, author: str, text: s
         return False
 
 
-TOPICS = ("review", "flagged", "takedowns", "declined", "ads", "alerts")
-TOPIC_NAMES = {"review": "📋 Final review", "flagged": "⚠️ Flagged", "takedowns": "🛑 Takedowns",
+TOPICS = ("flagged", "takedowns", "declined", "ads", "alerts")
+TOPIC_NAMES = {"flagged": "⚠️ Flagged", "takedowns": "🛑 Takedowns",
                "declined": "🗂 Declined", "ads": "💰 Ads", "alerts": "🔔 Alerts"}
 
 
@@ -130,7 +130,7 @@ def kb(rows: Iterable[Sequence[tuple[str, str] | tuple[str, str, str]]]) -> Inli
 
 
 def main_menu(lang: str, show_ads: bool = True) -> InlineKeyboardMarkup:
-    rows = [[(t(lang, "menu.confess"), "menu", "confess"), (t(lang, "menu.browse"), "menu", "browse")]]
+    rows = [[(t(lang, "menu.confess"), "menu", "confess"), (t(lang, "menu.browse"), "menu", "browse"), (t(lang, "menu.mine"), "menu", "mine")]]
     second = [(t(lang, "menu.rules"), "menu", "rules"), (t(lang, "menu.lang"), "menu", "lang")]
     if show_ads and cfg("ads_enabled", True):
         second.insert(0, (t(lang, "menu.advertise"), "menu", "advertise"))
@@ -146,6 +146,7 @@ def main_menu(lang: str, show_ads: bool = True) -> InlineKeyboardMarkup:
 NAV_ACTIONS = {
     "menu.confess": "confess",
     "menu.browse": "browse",
+    "menu.mine": "mine",
     "menu.advertise": "advertise",
     "menu.rules": "rules",
     "menu.help": "help",
@@ -161,7 +162,7 @@ def nav_keyboard(lang: str, user_id: int | None = None) -> ReplyKeyboardMarkup:
     if cfg("ads_enabled", True):
         second.insert(0, t(lang, "menu.advertise"))
     rows.append(second)
-    rows.append([t(lang, "menu.lang")])
+    rows.append([t(lang, "menu.mine"), t(lang, "menu.lang")])
     role = role_of(user_id) if user_id else "user"
     if role in ("moderator", "admin", "owner"):
         staff_row = ["📋 Queue", "📊 Stats"] + (["⚙️ Admin"] if role != "moderator" else [])
@@ -262,11 +263,46 @@ async def show_browse(message, context: ContextTypes.DEFAULT_TYPE, lang: str) ->
     await message.reply_text(text, reply_markup=kb(buttons), disable_web_page_preview=True)
 
 
+def my_confessions(author: str, limit: int = 5) -> list[dict]:
+    """Status of the author's recent confessions across pending / live / declined (pure given DB)."""
+    rows: list[dict] = []
+    for r in db.q("SELECT id, created FROM submissions WHERE author=? ORDER BY id DESC LIMIT ?", (author, limit)):
+        rows.append({"status": "pending", "ts": r["created"], "number": None})
+    for r in db.q("SELECT number, posted_at, comment_count, deleted FROM posts WHERE author=? AND kind='confession' ORDER BY number DESC LIMIT ?",
+                  (author, limit)):
+        rows.append({"status": "deleted" if r["deleted"] else "live", "ts": r["posted_at"], "number": r["number"], "count": r["comment_count"]})
+    for r in db.q("SELECT created, reason FROM declined WHERE author=? ORDER BY id DESC LIMIT ?", (author, limit)):
+        rows.append({"status": "declined", "ts": r["created"], "number": None, "reason": r["reason"] or "other"})
+    rows.sort(key=lambda x: x["ts"] or 0, reverse=True)
+    return rows[:limit]
+
+
+async def show_mine(message, lang: str, author: str) -> None:
+    items = my_confessions(author)
+    if not items:
+        await message.reply_text(t(lang, "mine.empty"), reply_markup=kb([[(t(lang, "menu.confess"), "menu", "confess")]]))
+        return
+    lines, buttons = [t(lang, "mine.title")], []
+    for it in items:
+        if it["status"] == "live":
+            lines.append(t(lang, "mine.live", number=it["number"], count=it["count"]))
+            buttons.append([(t(lang, "mine.btn_thread", number=it["number"]), "cm", f"pg:{it['number']}:0"),
+                            (t(lang, "mine.btn_delete", number=it["number"]), "mine", f"del:{it['number']}")])
+        elif it["status"] == "declined":
+            lines.append(t(lang, "mine.declined", reason=t(lang, "reject." + it["reason"])))
+        else:
+            lines.append(t(lang, f"mine.{it['status']}"))
+    buttons.append([(t(lang, "menu.back"), "menu", "home")])
+    await message.reply_text("\n".join(lines), reply_markup=kb(buttons))
+
+
 async def dispatch_nav(message, context: ContextTypes.DEFAULT_TYPE, lang: str, action: str | None) -> bool:
     """Render the hub screen for a bottom-keyboard action. Returns False for
     actions owned by conversations (confess/advertise)."""
     if action == "browse":
         await show_browse(message, context, lang)
+    elif action == "mine":
+        await show_mine(message, lang, author_hash(message.chat_id))
     elif action == "rules":
         await show_rules(message, lang)
     elif action == "help":
@@ -303,6 +339,39 @@ def bot_link(context: ContextTypes.DEFAULT_TYPE, start: str) -> str:
     return f"https://t.me/{username}?start={start}"
 
 
+# ---------------------------------------------------------------------------
+# Pending "type your next message" states: expire + bind to the originating chat
+# ---------------------------------------------------------------------------
+
+PENDING_TTL_SEC = 600
+
+
+def pending_set(context: ContextTypes.DEFAULT_TYPE, key: str, value, chat_id: int) -> None:
+    context.user_data[key] = {"v": value, "chat": chat_id, "at": db.now()}
+
+
+def pending_get(context: ContextTypes.DEFAULT_TYPE, key: str, chat_id: int):
+    """Return the stored value if fresh and from the same chat, else drop it and return None."""
+    item = context.user_data.get(key)
+    if not isinstance(item, dict) or "v" not in item:
+        context.user_data.pop(key, None)
+        return None
+    if item["chat"] != chat_id or db.now() - item["at"] > PENDING_TTL_SEC:
+        context.user_data.pop(key, None)
+        return None
+    return item["v"]
+
+
+def pending_clear(context: ContextTypes.DEFAULT_TYPE, key: str) -> bool:
+    return context.user_data.pop(key, None) is not None
+
+
+async def staff_reply(update: Update, text: str, **kw) -> None:
+    """Reply to a staff slash command with the role-aware bottom keyboard (never a dead end)."""
+    uid = update.effective_user.id
+    await update.effective_message.reply_text(text, reply_markup=nav_keyboard(lang_of(update), uid), **kw)
+
+
 def parse_int(s: str | None) -> int | None:
     try:
         return int(str(s).strip().lstrip("#"))
@@ -312,6 +381,49 @@ def parse_int(s: str | None) -> int | None:
 
 def fmt_ts(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def ad_card(ad: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Admin card for an ad awaiting payment review or content approval (used by /ads and the hub)."""
+    pkg = db.one("SELECT name FROM packages WHERE id=?", (ad["package_id"],))
+    p = db.one("SELECT * FROM payments WHERE ad_id=? ORDER BY id DESC LIMIT 1", (ad["id"],))
+    if p:
+        match = {None: "?", 1: "✓", 0: "✗"}[p["receiver_match"]]
+        pay = (f"payment: {p['status']} · {p['bank']} {p['reference']} · amount {p['amount']} · sender {p['sender_name'] or '?'} "
+               f"· receiver {match} · reused {'yes' if p['confirmed_before'] else 'no'} · {p['reason'] or ''}")
+    else:
+        pay = "payment: none"
+    btn = f"\nbutton: {ad['button_text']} → {ad['button_url']}" if ad["button_url"] else ""
+    text = (f"Ad #{ad['id']} · {pkg['name'] if pkg else '?'} · {ad['price_etb']} ETB · {ad['status']}\n{pay}\n────────\n"
+            f"{ad['text']}{btn}\n{'📷 has photo' if ad['media_file_id'] else ''}")
+    s = str(ad["id"])
+    if ad["status"] == "needs_review":
+        markup = kb([[("✅ Accept payment", "ada", f"manual_ok:{s}"), ("❌ Decline", "ada", f"manual_no:{s}")]])
+    else:
+        markup = kb([[("✅ Approve & schedule", "ada", f"approve:{s}"), ("❌ Reject", "ada", f"rej:{s}")], [("🕐 Schedule +24h", "ada", f"later:{s}")]])
+    return text, markup
+
+
+async def send_ad_cards(message, limit: int = 5) -> int:
+    """Send the pending ad cards (needs_review first). Returns how many were sent."""
+    rows = db.q("SELECT * FROM ads WHERE status IN ('paid','needs_review') "
+                "ORDER BY CASE status WHEN 'needs_review' THEN 0 ELSE 1 END, id LIMIT ?", (limit,))
+    for r in rows:
+        ad = dict(r)
+        text, markup = ad_card(ad)
+        if ad["media_file_id"]:
+            try:
+                await message.reply_photo(ad["media_file_id"], caption=text[:1000], reply_markup=markup)
+                continue
+            except TelegramError:
+                pass
+        await message.reply_text(text, reply_markup=markup, disable_web_page_preview=True)
+    return len(rows)
+
+
+def staff_name(user_id: int | None) -> str:
+    row = db.one("SELECT display FROM staff WHERE user_id=?", (user_id,)) if user_id else None
+    return (row["display"] if row and row["display"] else str(user_id or "?"))[:24]
 
 
 def category(cat_id: int | None) -> dict:

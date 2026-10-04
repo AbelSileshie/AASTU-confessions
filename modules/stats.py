@@ -6,24 +6,15 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import is_private_chat, post_link
-from ops import gather_stats
+from common import is_private_chat, kb, post_link, staff_reply
+from ops import gather_stats, health_text
 from security import require
 
 
 @require("moderator")
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_private_chat(update):
-        return
-    s = gather_stats(db.now())
-    mods = "\n".join(f"  {m['actor']}: {m['n']}" for m in s["mods_today"]) or "  –"
-    await update.message.reply_text(
-        f"Queue: {s['queue']} (claimed {s['claimed']}) · Final review: {s['final']} · Outbox: {s['outbox']}\n"
-        f"Posted: {s['posted_today']} today · {s['posted_7d']} / 7d\n"
-        f"Comments today: {s['comments_today']}\n"
-        f"Pending ads: {s['pending_ads']} · Revenue 30d: {s['revenue_30d']} ETB\n"
-        f"On shift: {s['on_shift']}\nDecisions today:\n{mods}"
-    )
+    if is_private_chat(update):
+        await update.message.reply_text(health_text(db.now()), reply_markup=kb([[("📋 Queue", "rv", "next:0")]]))
 
 
 def top_posts(days: int = 7, limit: int = 5) -> list[dict]:
@@ -36,10 +27,10 @@ def top_posts(days: int = 7, limit: int = 5) -> list[dict]:
 async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     rows = top_posts()
     if not rows:
-        await update.message.reply_text("Nothing this week.")
+        await staff_reply(update, "Nothing this week.")
         return
     lines = [f"#{r['number']} · 💬 {r['comment_count']} · {post_link(context, r['channel_msg_id'])}" for r in rows]
-    await update.message.reply_text("🏆 Top this week\n" + "\n".join(lines), disable_web_page_preview=True)
+    await staff_reply(update, "🏆 Top this week\n" + "\n".join(lines), disable_web_page_preview=True)
 
 
 @require("admin")
@@ -52,7 +43,8 @@ async def mediakit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     s = gather_stats(db.now())
     pkgs = db.q("SELECT name, price_etb, description FROM packages WHERE enabled=1 ORDER BY sort")
     pk = "\n".join(f"• {p['name']} — {p['price_etb']} ETB: {p['description']}" for p in pkgs)
-    await update.message.reply_text(
+    await staff_reply(
+        update,
         f"📣 Media kit\nSubscribers: {subs}\nPosts/7d: {s['posted_7d']}\nComments/day: {s['comments_today']}\n"
         f"Audience: AASTU students\n\nPackages:\n{pk}\n\nOrder via the bot → 📢 Advertise."
     )

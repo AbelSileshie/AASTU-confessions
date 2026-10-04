@@ -62,5 +62,16 @@
   "nav.cancelled": "ተሰርዟል። ወደ ዋና ገጽ ተመልሰዋል።",
   "browse.empty": "ገና ምንም አልተለጠፈም። የመጀመሪያው ይሁኑ — ✍️ ኑዛዜ ላክ ይጫኑ።",
   "ads.preview": "☝️ ማስታወቂያዎ እንዲህ ይታያል።",
-  "nav.left_flow": "ካለፈው ደረጃ ወጥተዋል። ለመጀመር {label} እንደገና ይጫኑ።"
+  "nav.left_flow": "ካለፈው ደረጃ ወጥተዋል። ለመጀመር {label} እንደገና ይጫኑ።",
+  "menu.mine": "📝 የእኔ ኑዛዜዎች",
+  "comments.open_thread": "💬 ውይይቱን ክፈት",
+  "notify.new_comments": "💬 በኑዛዜህ #{number} ላይ {n} አዲስ አስተያየት።",
+  "notify.new_comments_multi": "💬 በ{posts} ኑዛዜዎችህ ላይ {n} አዲስ አስተያየቶች።",
+  "mine.title": "📝 የቅርብ ጊዜ ኑዛዜዎችህ",
+  "mine.empty": "ገና ኑዛዜ አልላክህም። ✍️ ኑዛዜ ላክ ይጫኑ።",
+  "mine.pending": "⏳ በግምገማ ላይ",
+  "mine.live": "✅ #{number} ሆኖ ወጥቷል · 💬 {count}",
+  "mine.declined": "❌ አልተፈቀደም ({reason})",
+  "mine.deleted": "🗑 ተሰርዟል",
+  "ads.btn_contact": "✉️ አስተዳዳሪን አግኝ"
 }

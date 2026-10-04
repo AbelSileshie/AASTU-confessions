@@ -64,7 +64,7 @@ them the invite link. Add receiving accounts with `/payout_accounts add telebirr
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q            # 176 tests, ~15 s
+.venv/bin/python -m pytest -q            # 193 tests, ~20 s
 .venv/bin/bandit -q -r . -x ./.venv,./tests
 .venv/bin/pip-audit
 ```
@@ -100,20 +100,23 @@ Backups run nightly at 03:00 UTC to the backup channel, encrypted with `age`; se
 ## Moderation flow
 
 ```
-student → DM queue (moderators, /next or 📋 Queue, atomic claim)
-        → Approve → ONE card in the admin group's 📋 Final review topic
-                    (⚠️ Flagged topic when risk words hit)
-        → first admin to press ✅ Post wins; card is edited in place → channel
-        → Reject (either stage) → 🗂 Declined topic with full text + ↩️ Restore,
-          auto-deleted after `declined_ttl_hours` (default 72)
+student → DM queue (moderators, 📋 Queue / /next, atomic claim)
+        → Approve → outbox → channel          (one review is enough)
+          risk-flagged items post too, but a notice lands in ⚠️ Flagged with [🛑 Take down] [✅ Fine]
+        → Reject → 🗂 Declined topic: full text · reason · who · [↩️ Restore]; purged after `declined_ttl_hours`
+takedown by someone else → the moderator who approved it is told why
 ```
 
-Admins who approve from their own DM queue skip the second stage. Set `final_review=0` for
-single-stage (small teams). Takedown requests, hidden comments, payment issues and system
-alerts go to their own topics (🛑 Takedowns, 💰 Ads, 🔔 Alerts).
+Other topics: 🛑 Takedowns (requests, auto-hidden comments), 💰 Ads (payment review, advertiser
+messages with [↩️ Reply]), 🔔 Alerts (queue, poster, backups). **Group setup:** enable *Topics*,
+give the bot *Manage topics*, then `⚙️ Admin → Group setup → Create topics`.
 
-**Group setup:** enable *Topics* in the admin group, give the bot *Manage topics*, then
-`⚙️ Admin → Group setup → Create topics`. Without topics everything lands in the main chat.
+## Student extras
+
+`📝 My confessions` shows the status of recent submissions (pending / live #N / not approved /
+deleted) with Delete and Thread buttons. Authors get one grouped DM for new comments at most every
+`comment_notify_interval_sec`. Advertisers manage orders in `/myads` (re-open pay screen, cancel,
+✉️ Contact admin → 💰 Ads topic).
 
 ## Admin hub
 

@@ -20,8 +20,7 @@ def _group_cards(h):
     return [c for c in h.tg.calls if c.chat_id == ADMIN_GROUP and c.method == "sendMessage"]
 
 
-async def _two_stage(h):
-    h.set("final_review", 1)
+async def _two_stage(h):  # name kept for brevity: sets up staff + fast posting
     h.set("submit_cooldown_sec", 0)
     h.set("post_interval_sec", 0)
     h.add_staff(MOD)
@@ -31,99 +30,63 @@ async def _two_stage(h):
                (MOD, ADMIN, ADMIN2))
 
 
-async def _mod_approves(h, uid=S, text=TEXT):
-    await h.submit_confession(uid, text)
-    await h.say(MOD, "/next")
-    await h.press(MOD, "Approve")
-    return _group_cards(h)[-1]
-
-
 # ---------------------------------------------------------------------------
-# Two-stage approval
+# Single-stage approval + flagged notice + moderator feedback
 # ---------------------------------------------------------------------------
 
-async def test_moderator_approval_waits_for_admin_post(h):
-    await _two_stage(h)
-    card = await _mod_approves(h)
-    assert "final review" in h.last(MOD).text
-    assert db.scalar("SELECT stage FROM outbox") == "final"
-    assert "by Mod Mary" in card.text and card.button("Post") and card.button("Edit") and card.button("Reject")
-    await h.run_job(poster_job)
-    assert db.scalar("SELECT count(*) FROM posts") == 0  # nothing posted yet
-    await h.press(ADMIN, "Post", message=card, chat_id=ADMIN_GROUP)
-    assert db.scalar("SELECT stage FROM outbox") == "ready"
-    edited = [c for c in h.tg.calls if c.method == "editMessageText" and c.message_id == card.message_id][-1]
-    assert "approved for posting by Admin Abel" in edited.text and edited.markup is None
-    await h.run_job(poster_job)
-    assert db.scalar("SELECT count(*) FROM posts") == 1
-    assert any("live as #1" in t for t in h.texts(S))
-
-
-async def test_two_admins_race_exactly_one_wins(h):
-    await _two_stage(h)
-    card = await _mod_approves(h)
-    post = card.callback("Post")
-    await h.app.process_update(callback_update(h.bot, ADMIN, post, card, chat_id=ADMIN_GROUP))
-    await h.app.process_update(callback_update(h.bot, ADMIN2, post, card, chat_id=ADMIN_GROUP))
-    assert db.scalar("SELECT final_by FROM outbox") == ADMIN
-    assert db.scalar("SELECT count(*) FROM audit WHERE action='final_post'") == 1
-    answers = [c for c in h.tg.calls if c.method == "answerCallbackQuery"]
-    assert any("Someone else" in str(a.params.get("text", "")) or "Already handled" in str(a.params.get("text", "")) for a in answers)
-    await h.run_job(poster_job)
-    await h.run_job(poster_job)
-    assert db.scalar("SELECT count(*) FROM posts") == 1
-
-
-async def test_moderator_cannot_press_group_card_buttons(h):
-    await _two_stage(h)
-    card = await _mod_approves(h)
-    await h.app.process_update(callback_update(h.bot, MOD, card.callback("Post"), card, chat_id=ADMIN_GROUP))
-    assert db.scalar("SELECT stage FROM outbox") == "final"
-
-
-async def test_admin_dm_approval_skips_second_stage(h):
+async def test_moderator_approval_publishes_directly(h):
     await _two_stage(h)
     await h.submit_confession(S, TEXT)
-    await h.say(ADMIN, "/next")
-    await h.press(ADMIN, "Approve")
+    await h.say(MOD, "/next")
+    await h.press(MOD, "Approve")
+    assert "queued for posting" in h.last(MOD).text
     assert db.scalar("SELECT stage FROM outbox") == "ready"
-    assert _group_cards(h) == []  # no redundant card for the admin's own approval
+    await h.run_job(poster_job)
+    assert db.scalar("SELECT approved_by FROM posts WHERE number=1") == MOD
+    assert _group_cards(h) == []  # nothing for admins to do
 
 
-async def test_flagged_goes_to_flagged_topic_and_needs_admin(h):
+async def test_flagged_publishes_with_notice_and_one_tap_takedown(h):
     await _two_stage(h)
     h.set("topic_flagged", 77)
-    h.set("topic_review", 55)
-    card = await _mod_approves(h, text=FLAGGED)
-    assert db.scalar("SELECT stage FROM outbox") == "flagged"
-    assert card.params.get("message_thread_id") == 77
-    assert "FLAGGED" in card.text and "⚠️video⚠️" in card.text
-    await h.press(ADMIN, "Post", message=card, chat_id=ADMIN_GROUP)
-    assert db.scalar("SELECT stage FROM outbox") == "ready"
+    await h.submit_confession(S, FLAGGED)
+    await h.say(MOD, "/next")
+    await h.press(MOD, "Approve")
+    assert "flagged" in h.last(MOD).text
+    await h.run_job(poster_job)
+    assert db.scalar("SELECT count(*) FROM posts") == 1
+    notice = _group_cards(h)[-1]
+    assert notice.params.get("message_thread_id") == 77 and "Flagged confession #1" in notice.text and "Mod Mary" in notice.text
+    assert notice.button("Take down") and notice.button("Fine")
+    await h.press(ADMIN, "Take down", message=notice, chat_id=ADMIN_GROUP)
+    assert db.scalar("SELECT deleted FROM posts WHERE number=1") == 1
+    # moderator who approved is told
+    assert any("taken down by Admin Abel" in t for t in h.texts(MOD))
+    # author told too
+    assert any("deleted" in t for t in h.texts(S))
 
 
-async def test_admin_edit_from_group_card(h):
+async def test_flagged_notice_fine_button_closes_card(h):
     await _two_stage(h)
-    card = await _mod_approves(h)
-    await h.press(ADMIN, "Edit", message=card, chat_id=ADMIN_GROUP)
-    assert "corrected text" in h.last(ADMIN_GROUP).text
-    await h.say(ADMIN, "An edited confession text that is still long enough to be accepted.", chat_id=ADMIN_GROUP)
-    assert db.scalar("SELECT text FROM outbox").startswith("An edited")
-    edits = [c for c in h.tg.calls if c.method == "editMessageText" and c.message_id == card.message_id]
-    assert edits and "An edited" in edits[-1].text and edits[-1].button("Post")
+    await h.submit_confession(S, FLAGGED)
+    await h.say(MOD, "/next")
+    await h.press(MOD, "Approve")
+    await h.run_job(poster_job)
+    notice = _group_cards(h)[-1]
+    await h.press(ADMIN, "Fine", message=notice, chat_id=ADMIN_GROUP)
+    edited = [c for c in h.tg.calls if c.method == "editMessageText" and c.message_id == notice.message_id][-1]
+    assert "left up" in edited.text and edited.markup is None
+    assert db.scalar("SELECT deleted FROM posts WHERE number=1") == 0
 
 
-async def test_admin_reject_from_group_goes_to_declined(h):
+async def test_moderator_not_notified_for_own_takedown(h):
     await _two_stage(h)
-    h.set("topic_declined", 99)
-    card = await _mod_approves(h)
-    await h.press(ADMIN, "Reject", message=card, chat_id=ADMIN_GROUP)
-    await h.press(ADMIN, "names a person", message=card, chat_id=ADMIN_GROUP)
-    assert db.scalar("SELECT count(*) FROM outbox") == 0
-    assert db.scalar("SELECT reason FROM declined") == "names"
-    declined_card = _group_cards(h)[-1]
-    assert declined_card.params.get("message_thread_id") == 99 and TEXT in declined_card.text and declined_card.button("Restore")
-    assert any("not approved" in t for t in h.texts(S))
+    await h.submit_confession(S, TEXT)
+    await h.say(MOD, "/next")
+    await h.press(MOD, "Approve")
+    await h.run_job(poster_job)
+    await h.say(MOD, "/takedown 1 changed my mind")
+    assert not any("taken down by" in t for t in h.texts(MOD))
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +135,9 @@ async def test_declined_purged_after_ttl(h):
 async def test_alerts_route_to_topics_and_fall_back_to_main(h):
     await _two_stage(h)
     h.set("topic_takedowns", 31)
-    await _mod_approves(h)
-    await h.press(ADMIN, "Post", message=_group_cards(h)[-1], chat_id=ADMIN_GROUP)
+    await h.submit_confession(S, TEXT)
+    await h.say(MOD, "/next")
+    await h.press(MOD, "Approve")
     await h.run_job(poster_job)
     await h.say(S2, "/rules")
     await h.press(S2, "Request takedown")
@@ -195,11 +159,11 @@ async def test_group_setup_creates_topics(h):
     await h.say(ADMIN, "/admin")
     await h.press(ADMIN, "Group setup")
     await h.press(ADMIN, "Create topics")
-    assert len(h.tg.topics) == 6
+    assert len(h.tg.topics) == 5
     from config import cfg
-    assert cfg("topic_review") == 101 and cfg("topic_alerts") == 106
+    assert cfg("topic_flagged") == 101 and cfg("topic_alerts") == 105
     await h.press(ADMIN, "Reset to main chat")
-    assert cfg("topic_review") == 0
+    assert cfg("topic_flagged") == 0
 
 
 # ---------------------------------------------------------------------------

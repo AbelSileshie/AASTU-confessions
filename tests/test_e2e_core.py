@@ -240,7 +240,7 @@ async def test_queue_alert_and_stats(h):
     await h.run_job(housekeeping_job)
     assert "Review queue is at 1" in h.last(ADMIN_GROUP).text
     await h.say(MOD, "/stats")
-    assert "Queue: 1" in h.last(MOD).text
+    assert "Queue 1" in h.last(MOD).text
 
 
 async def test_group_chat_commands_ignored(h):

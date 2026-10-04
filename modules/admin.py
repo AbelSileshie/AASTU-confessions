@@ -11,7 +11,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import TOPICS, TOPIC_NAMES, bot_link, fmt_ts, is_private_chat, kb, nav_keyboard
+from common import TOPICS, TOPIC_NAMES, bot_link, fmt_ts, is_private_chat, kb, pending_clear, pending_get, pending_set, send_ad_cards
 from config import cfg, invalidate
 from ops import (
     CATEGORY_FIELDS,
@@ -22,7 +22,7 @@ from ops import (
     add_word,
     can_assign,
     create_invite,
-    gather_stats,
+    health_text,
     move,
     remove_staff,
     remove_word_by_rowid,
@@ -156,21 +156,13 @@ def group_screen():
 
 
 def health_screen():
-    s = gather_stats(db.now())
-    now = db.now()
-    age = lambda ts: f"{(now - ts) // 60} min ago" if ts else "never"  # noqa: E731
-    text = (f"🩺 Health\nQueue {s['queue']} (claimed {s['claimed']}) · Final review {s['final']} · Ready {s['outbox']} · Declined {s['declined']}\n"
-            f"Last post: {age(s['last_post_at'])} · Last backup: {age(s['last_backup_at'])}\n"
-            f"Posted {s['posted_today']} today / {s['posted_7d']} 7d · Comments today {s['comments_today']}\n"
-            f"Pending ads {s['pending_ads']} · Revenue 30d {s['revenue_30d']} ETB · On shift {s['on_shift']}")
-    return text, kb([[("🔄 Refresh", "hub", "health"), BACK]])
+    return health_text(db.now()), kb([[("🔄 Refresh", "hub", "health"), BACK]])
 
 
 def ads_screen():
     n = db.scalar("SELECT count(*) FROM ads WHERE status IN ('paid','needs_review')", default=0)
     r = db.scalar("SELECT count(*) FROM ads WHERE status='refund_due'", default=0)
-    return (f"💰 Ads\n{n} waiting for review · {r} refunds due\n\nUse /ads to review cards, /revenue for totals, /refunds for the refund list."),\
-        kb([[BACK]])
+    return (f"💰 Ads — {n} waiting · {r} refunds due\n/revenue for totals · /refunds for the refund list"), kb([[("🔄 Refresh", "hub", "ads"), BACK]])
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +196,7 @@ async def hub_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     screen, rest = parts[0], parts[1:]
     await q.answer()
+    pending_clear(context, "hub_input")
 
     if screen == "home":
         await _render(q, home_screen(uid))
@@ -229,6 +222,7 @@ async def hub_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _render(q, health_screen())
     elif screen == "ads":
         await _render(q, ads_screen())
+        await send_ad_cards(q.message)
 
 
 async def _staff(q, context, uid: int, rest: list[str]) -> None:
@@ -269,10 +263,10 @@ async def _catalog(q, context, uid, table, fields, rest, list_screen, item_scree
         await _render(q, list_screen())
         return
     if rest[0] == "add":
-        context.user_data["hub_input"] = {"kind": f"{prefix}_add"}
+        pending_set(context, "hub_input", {"kind": f"{prefix}_add"}, q.message.chat_id)
         hint = ("Send: slug | Label | #Hashtag   (e.g. sports | ⚽ Sports | #Sports)" if prefix == "cat"
                 else "Send: slug | Name | price   (e.g. story | Story post | 1200)")
-        await q.message.reply_text(hint, reply_markup=kb([[("✖️ Cancel", "hub", f"{prefix}s")]]))
+        await q.message.reply_text(hint, reply_markup=kb([[("⬅️ Back", "hub", f"{prefix}s")]]))
         return
     item_id = int(rest[0]) if rest[0].isdigit() else -1
     action = rest[1] if len(rest) > 1 else ""
@@ -283,8 +277,8 @@ async def _catalog(q, context, uid, table, fields, rest, list_screen, item_scree
         await _render(q, list_screen())
         return
     elif action == "set" and len(rest) > 2 and rest[2] in fields:
-        context.user_data["hub_input"] = {"kind": f"{prefix}_set", "id": item_id, "field": rest[2]}
-        await q.message.reply_text(f"Send the new {rest[2].replace('_', ' ')}:", reply_markup=kb([[("✖️ Cancel", "hub", f"{prefix}:{item_id}")]]))
+        pending_set(context, "hub_input", {"kind": f"{prefix}_set", "id": item_id, "field": rest[2]}, q.message.chat_id)
+        await q.message.reply_text(f"Send the new {rest[2].replace('_', ' ')}:", reply_markup=kb([[("⬅️ Back", "hub", f"{prefix}:{item_id}")]]))
         return
     await _render(q, item_screen(item_id))
 
@@ -294,9 +288,9 @@ async def _pay(q, context, uid, rest) -> None:
         await q.answer("Owner only.", show_alert=True)
         return
     if rest and rest[0] == "add":
-        context.user_data["hub_input"] = {"kind": "pay_add"}
+        pending_set(context, "hub_input", {"kind": "pay_add"}, q.message.chat_id)
         await q.message.reply_text("Send: bank | account | Holder name\nbanks: " + ", ".join(BANK_FIELDS),
-                                   reply_markup=kb([[("✖️ Cancel", "hub", "pay")]]))
+                                   reply_markup=kb([[("⬅️ Back", "hub", "pay")]]))
         return
     if len(rest) >= 2 and rest[0].isdigit() and rest[1] == "toggle":
         toggle("payout_accounts", int(rest[0]), uid)
@@ -306,9 +300,9 @@ async def _pay(q, context, uid, rest) -> None:
 async def _word(q, context, uid, rest) -> None:
     if rest and rest[0] == "add":
         kind = rest[1] if len(rest) > 1 and rest[1] in ("block", "risk") else "block"
-        context.user_data["hub_input"] = {"kind": "word_add", "list": kind}
+        pending_set(context, "hub_input", {"kind": "word_add", "list": kind}, q.message.chat_id)
         await q.message.reply_text(f"Send words for the {kind} list (one per line or comma-separated):",
-                                   reply_markup=kb([[("✖️ Cancel", "hub", f"words:{kind}")]]))
+                                   reply_markup=kb([[("⬅️ Back", "hub", f"words:{kind}")]]))
         return
     if len(rest) >= 2 and rest[0].isdigit() and rest[1] == "del":
         remove_word_by_rowid(int(rest[0]), uid)
@@ -354,12 +348,14 @@ def _split(text: str, n: int) -> list[str] | None:
 
 @require("admin")
 async def hub_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    spec = context.user_data.get("hub_input")
-    if not spec or not is_private_chat(update):
+    if not is_private_chat(update):
+        return
+    spec = pending_get(context, "hub_input", update.effective_chat.id)
+    if not spec:
         return
     uid = update.effective_user.id
     text = (update.message.text or "").strip()
-    context.user_data.pop("hub_input", None)
+    pending_clear(context, "hub_input")
     kind = spec["kind"]
     ok, back = False, "home"
     if kind == "cat_add" and (p := _split(text, 3)):
@@ -382,8 +378,8 @@ async def hub_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @require("admin")
 async def cancel_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.user_data.pop("hub_input", None):
-        await update.message.reply_text("Cancelled.", reply_markup=nav_keyboard("en", update.effective_user.id))
+    if pending_clear(context, "hub_input"):
+        await update.message.reply_text("Cancelled.", reply_markup=kb([[("⚙️ Admin", "hub", "home")]]))
 
 
 def register(app: Application) -> None:

@@ -9,7 +9,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 import config
 import db
-from common import is_private_chat, kb
+from common import is_private_chat, kb, pending_clear, pending_get, pending_set, staff_reply
 from config import cfg
 from security import require, verify_cb
 
@@ -86,8 +86,10 @@ async def settings_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     payload = parsed[1]
     if payload == "home":
+        pending_clear(context, "setting_key")
         await q.message.edit_text("Settings — pick an area:", reply_markup=_groups_kb())
     elif payload.startswith("g:"):
+        pending_clear(context, "setting_key")
         group = payload[2:]
         if group in GROUPS:
             await q.message.edit_text(f"Settings › {group}", reply_markup=_keys_kb(group))
@@ -96,20 +98,24 @@ async def settings_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         row = db.one("SELECT * FROM settings WHERE key=?", (key,))
         if not row:
             return
-        context.user_data["setting_key"] = key
+        pending_set(context, "setting_key", key, q.message.chat_id)
         rng = f" [{row['min']}–{row['max']}]" if row["type"] == "int" and row["min"] is not None else ""
         await q.message.reply_text(
-            f"{key} ({row['type']}{rng})\n{row['description']}\n\nCurrent:\n{row['value']}\n\nSend the new value (or /cancel).")
+            f"{key} ({row['type']}{rng})\n{row['description']}\n\nCurrent:\n{row['value']}\n\nSend the new value.",
+            reply_markup=kb([[("⬅️ Back", "st", f"g:{row['grp']}"), ("✖️ Cancel", "st", "home")]]))
 
 
 @require("admin")
 async def settings_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    key = context.user_data.get("setting_key")
-    if not key or not is_private_chat(update):
+    if not is_private_chat(update):
+        return
+    key = pending_get(context, "setting_key", update.effective_chat.id)
+    if not key:
         return
     ok, result = set_setting(key, update.message.text or "", update.effective_user.id)
-    context.user_data.pop("setting_key", None)
-    await update.message.reply_text(f"✅ {key} = {result[:200]}" if ok else f"❌ {result}")
+    pending_clear(context, "setting_key")
+    await update.message.reply_text(f"✅ {key} = {result[:200]}" if ok else f"❌ {result}",
+                                    reply_markup=kb([[("⬅️ Settings", "st", "home"), ("⚙️ Admin", "hub", "home")]]))
 
 
 @require("admin")
@@ -117,16 +123,16 @@ async def set_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_private_chat(update):
         return
     if len(context.args or []) < 2:
-        await update.message.reply_text("Usage: /set <key> <value>")
+        await staff_reply(update, "Usage: /set <key> <value>")
         return
     key, value = context.args[0], " ".join(context.args[1:])
     ok, result = set_setting(key, value, update.effective_user.id)
-    await update.message.reply_text(f"✅ {key} = {result[:200]}" if ok else f"❌ {result}")
+    await staff_reply(update, f"✅ {key} = {result[:200]}" if ok else f"❌ {result}")
 
 
 @require("admin")
 async def cancel_setting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.user_data.pop("setting_key", None):
+    if pending_clear(context, "setting_key"):
         await update.message.reply_text("Cancelled.")
 
 
@@ -195,7 +201,7 @@ async def post_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except TelegramError:  # nosec B110 - pinning is best-effort; the post itself succeeded
         pass
     db.audit(update.effective_user.id, "post_rules", str(msg.message_id))
-    await update.message.reply_text("Rules posted and pinned.")
+    await staff_reply(update, "Rules posted and pinned.")
 
 
 def register(app: Application) -> None:

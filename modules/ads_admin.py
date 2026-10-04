@@ -5,10 +5,10 @@ import json
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import is_private_chat, kb, parse_int, post_link, reasons_kb
+from common import ad_card, is_private_chat, kb, staff_reply, parse_int, pending_clear, pending_get, pending_set, post_link, reasons_kb, send_ad_cards
 from i18n import t
 from security import require, verify_cb
 
@@ -66,48 +66,12 @@ def schedule(ad_id: int, actor: int, not_before: int = 0) -> bool:
 # Views
 # ---------------------------------------------------------------------------
 
-def _payment_summary(ad_id: int) -> str:
-    p = db.one("SELECT * FROM payments WHERE ad_id=? ORDER BY id DESC LIMIT 1", (ad_id,))
-    if not p:
-        return "payment: none"
-    match = {None: "?", 1: "✓", 0: "✗"}[p["receiver_match"]]
-    return (f"payment: {p['status']} · {p['bank']} {p['reference']} · amount {p['amount']} · sender {p['sender_name'] or '?'} "
-            f"· receiver {match} · reused {'yes' if p['confirmed_before'] else 'no'} · {p['reason'] or ''}")
-
-
-def _card(ad: dict) -> str:
-    pkg = db.one("SELECT name FROM packages WHERE id=?", (ad["package_id"],))
-    btn = f"\nbutton: {ad['button_text']} → {ad['button_url']}" if ad["button_url"] else ""
-    return (f"Ad #{ad['id']} · {pkg['name'] if pkg else '?'} · {ad['price_etb']} ETB · {ad['status']}\n"
-            f"{_payment_summary(ad['id'])}\n────────\n{ad['text']}{btn}\n"
-            f"{'📷 has photo' if ad['media_file_id'] else ''}")
-
-
-def _card_kb(ad: dict):
-    s = str(ad["id"])
-    if ad["status"] == "needs_review":
-        return kb([[("✅ Accept payment", "ada", f"manual_ok:{s}"), ("❌ Decline", "ada", f"manual_no:{s}")]])
-    return kb([[("✅ Approve & schedule", "ada", f"approve:{s}"), ("❌ Reject", "ada", f"rej:{s}")],
-               [("🕐 Schedule +24h", "ada", f"later:{s}")]])
-
-
 @require("admin")
 async def ads_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_private_chat(update):
         return
-    rows = db.q("SELECT * FROM ads WHERE status IN ('paid','needs_review') ORDER BY CASE status WHEN 'needs_review' THEN 0 ELSE 1 END, id LIMIT 5")
-    if not rows:
-        await update.message.reply_text("No ads waiting.")
-        return
-    for r in rows:
-        ad = dict(r)
-        if ad["media_file_id"]:
-            try:
-                await update.message.reply_photo(ad["media_file_id"], caption=_card(ad)[:1000], reply_markup=_card_kb(ad))
-                continue
-            except TelegramError:
-                pass
-        await update.message.reply_text(_card(ad), reply_markup=_card_kb(ad), disable_web_page_preview=True)
+    if not await send_ad_cards(update.message):
+        await update.message.reply_text("No ads waiting.", reply_markup=kb([[("⬅️ Admin", "hub", "home")]]))
 
 
 async def _notify_advertiser(context, ad_id: int, text: str) -> None:
@@ -177,7 +141,7 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await q.answer("Marked paid")
             await _notify_advertiser(context, ad_id, t("en", "ads.verified"))
             ad = dict(db.one("SELECT * FROM ads WHERE id=?", (ad_id,)))
-            await _edit(q, "💰 payment accepted manually", markup=_card_kb(ad))
+            await _edit(q, "💰 payment accepted manually", markup=ad_card(ad)[1])
         else:
             await q.answer("Cannot accept.", show_alert=True)
     elif action == "manual_no":
@@ -190,6 +154,44 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _edit(q, "🚫 payment declined; order cancelled")
         else:
             await q.answer("Cannot decline.", show_alert=True)
+
+
+@require("admin")
+async def reply_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """↩️ Reply on an advertiser message → next text from this admin is DM'd to the advertiser."""
+    q = update.callback_query
+    parsed = verify_cb(q.data)
+    await q.answer()
+    if parsed and parsed[1] == "cancel":
+        pending_clear(context, "ad_reply")
+        try:
+            await q.message.edit_text((q.message.text or "") + "\n\n✖️ cancelled", reply_markup=None)
+        except TelegramError:
+            pass
+        return
+    if not parsed or not parsed[1].isdigit():
+        return
+    pending_set(context, "ad_reply", int(parsed[1]), q.message.chat_id)
+    await q.message.reply_text(f"Reply to the advertiser of ad #{parsed[1]} — send the text here.",
+                               reply_markup=kb([[("✖️ Cancel", "adr", "cancel")]]))
+
+
+@require("admin")
+async def reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ad_id = pending_get(context, "ad_reply", update.effective_chat.id)
+    if ad_id is None:
+        return
+    pending_clear(context, "ad_reply")
+    text = (update.message.text or "").strip()[:1500]
+    await _notify_advertiser(context, ad_id, f"💬 Admin reply about your ad #{ad_id}:\n\n{text}")
+    db.audit(update.effective_user.id, "ad_reply", f"ad:{ad_id}")
+    await update.message.reply_text("Sent to the advertiser.")
+
+
+@require("admin")
+async def cancel_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if pending_clear(context, "ad_reply"):
+        await update.message.reply_text("Reply cancelled.")
 
 
 async def _edit(q, suffix: str, markup=None) -> None:
@@ -217,9 +219,9 @@ def ad_report(context, ad_id: int) -> str:
 async def ad_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ad_id = parse_int(context.args[0]) if context.args else None
     if ad_id is None or not db.one("SELECT 1 FROM ads WHERE id=?", (ad_id,)):
-        await update.message.reply_text("Usage: /ad_report <ad id>")
+        await staff_reply(update, "Usage: /ad_report <ad id>")
         return
-    await update.message.reply_text(ad_report(context, ad_id), disable_web_page_preview=True)
+    await staff_reply(update, ad_report(context, ad_id), disable_web_page_preview=True)
 
 
 @require("admin")
@@ -231,7 +233,7 @@ async def revenue_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "GROUP BY pk.name, p.bank ORDER BY total DESC", (since,))
     total = sum(r["total"] or 0 for r in rows)
     body = "\n".join(f"{r['name']} via {r['bank']}: {r['n']} × → {r['total']} ETB" for r in rows) or "no revenue"
-    await update.message.reply_text(f"Revenue last {days or 30} days: {total} ETB\n{body}")
+    await staff_reply(update, f"Revenue last {days or 30} days: {total} ETB\n{body}")
 
 
 @require("owner")
@@ -239,14 +241,14 @@ async def refunds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if context.args and context.args[0] == "done" and len(context.args) > 1:
         ad_id = parse_int(context.args[1])
         if ad_id is not None and transition(ad_id, "cancelled", update.effective_user.id, "refunded"):
-            await update.message.reply_text(f"Ad #{ad_id} marked refunded.")
+            await staff_reply(update, f"Ad #{ad_id} marked refunded.")
         else:
-            await update.message.reply_text("Not in refund_due.")
+            await staff_reply(update, "Not in refund_due.")
         return
     rows = db.q("SELECT a.id, a.price_etb, p.bank, p.reference, p.sender_name FROM ads a LEFT JOIN payments p ON p.ad_id=a.id "
                 "AND p.status IN ('verified','manual_ok') WHERE a.status='refund_due' ORDER BY a.id")
     body = "\n".join(f"#{r['id']} · {r['price_etb']} ETB · {r['bank']} {r['reference']} · {r['sender_name'] or '?'}" for r in rows) or "none"
-    await update.message.reply_text(f"Refunds due:\n{body}\n\n/refunds done <ad id> when paid back.")
+    await staff_reply(update, f"Refunds due:\n{body}\n\n/refunds done <ad id> when paid back.")
 
 
 async def daily_ad_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -274,3 +276,6 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("revenue", revenue_cmd))
     app.add_handler(CommandHandler("refunds", refunds_cmd))
     app.add_handler(CallbackQueryHandler(ads_cb, pattern=r"^ada:"))
+    app.add_handler(CallbackQueryHandler(reply_cb, pattern=r"^adr:"))
+    app.add_handler(CommandHandler("cancel", cancel_reply), group=5)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_text), group=5)

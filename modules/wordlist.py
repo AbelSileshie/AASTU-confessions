@@ -4,7 +4,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from common import is_private_chat
+from common import is_private_chat, staff_reply
 from ops import add_word, remove_word, words
 from security import require
 
@@ -14,9 +14,9 @@ async def _add(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str) ->
         return
     phrase = " ".join(context.args or [])
     if not phrase:
-        await update.message.reply_text(f"Usage: /{kind} <word or phrase>")
+        await staff_reply(update, f"Usage: /{kind} <word or phrase>")
         return
-    await update.message.reply_text("Added." if add_word(phrase, kind, update.effective_user.id) else "Invalid word.")
+    await staff_reply(update, "Added." if add_word(phrase, kind, update.effective_user.id) else "Invalid word.")
 
 
 @require("moderator")
@@ -35,7 +35,7 @@ async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     phrase = " ".join(context.args or [])
     n = remove_word(phrase, update.effective_user.id) if phrase else 0
-    await update.message.reply_text(f"Removed {n}.")
+    await staff_reply(update, f"Removed {n}.")
 
 
 @require("moderator")
@@ -44,7 +44,7 @@ async def words_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     blocks = ", ".join(w["word"] for w in words("block")) or "-"
     risks = ", ".join(w["word"] for w in words("risk")) or "-"
-    await update.message.reply_text(f"Block:\n{blocks}\n\nRisk:\n{risks}"[:4000])
+    await staff_reply(update, f"Block:\n{blocks}\n\nRisk:\n{risks}"[:4000])
 
 
 def register(app: Application) -> None:
