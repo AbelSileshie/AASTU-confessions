@@ -85,21 +85,28 @@ COMMANDS = [
 
 
 async def post_init(app: Application) -> None:
+    from common import channel_info
+
     env = app.bot_data["env"]
-    me = await app.bot.get_me()
-    app.bot_data["bot_username"] = me.username
-    try:
-        chat = await app.bot.get_chat(env.channel_id)
-        app.bot_data["channel_username"] = chat.username
-    except TelegramError:
-        app.bot_data["channel_username"] = None
+    for attempt in range(3):
+        try:
+            me = await app.bot.get_me()
+            app.bot_data["bot_username"] = me.username
+            break
+        except TelegramError:
+            await asyncio.sleep(2 * (attempt + 1))
+    ctx = ContextTypes.DEFAULT_TYPE(app)
+    info = await channel_info(ctx, force=True)
+    app.bot_data["channel_private"] = not info.get("username")
     await app.bot.set_my_commands(COMMANDS)
     from modules.core import set_menu_button
 
     await set_menu_button(app)
     if env.owner_id:
+        note = ("\n⚠️ The channel has no public @username, so post links only open for members. "
+                "Live notifications will carry a Join button." if app.bot_data.get("channel_private") else "")
         try:
-            await app.bot.send_message(env.owner_id, f"started · v{VERSION} · {env.run_mode}")
+            await app.bot.send_message(env.owner_id, f"started · v{VERSION} · {env.run_mode}{note}")
         except TelegramError:
             pass
 
@@ -108,8 +115,7 @@ def build() -> tuple[Application, object]:
     env = load_env()
     db.init(env.db_path)
     security.configure(env.hmac_secret, env.fernet_key, env.owner_id)
-    app = (ApplicationBuilder().token(env.bot_token).post_init(post_init)
-           .concurrent_updates(False).build())
+    app = ApplicationBuilder().token(env.bot_token).concurrent_updates(False).build()
     app.bot_data["env"] = env
     app.add_error_handler(on_error)
     register_modules(app)
@@ -121,6 +127,7 @@ async def run_webhook(app: Application, env) -> None:
     web_app = build_app(env, app, verify_handler=handle_verify_webhook)
     runner = await start_server(web_app, env.listen_host, env.listen_port)
     async with app:
+        await post_init(app)  # Application.initialize() does not run post_init
         await app.bot.set_webhook(
             url=env.public_url + env.webhook_path, secret_token=env.tg_webhook_secret or None,
             allowed_updates=["message", "callback_query", "my_chat_member"], drop_pending_updates=False,
@@ -140,6 +147,7 @@ async def run_polling(app: Application, env) -> None:
     web_app = build_app(env, app, verify_handler=handle_verify_webhook)
     runner = await start_server(web_app, env.listen_host, env.listen_port)
     async with app:
+        await post_init(app)  # Application.initialize() does not run post_init
         await app.bot.delete_webhook(drop_pending_updates=False)
         await app.start()
         await app.updater.start_polling(allowed_updates=["message", "callback_query", "my_chat_member"])

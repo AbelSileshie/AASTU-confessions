@@ -9,7 +9,9 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 import config
 import db
-from common import is_private_chat, kb, pending_clear, pending_get, pending_set, staff_reply
+from fmt import Rich
+from common import is_private_chat, kb, normalize_newlines, pending_clear, pending_get, pending_set, render_setting_text, staff_reply
+from textfilter import strip_invisible
 from config import cfg
 from security import require, verify_cb
 
@@ -36,6 +38,7 @@ def validate(row: dict, raw: str) -> tuple[bool, str]:
         if raw.lower() in ("0", "false", "no", "off"):
             return True, "0"
         return False, "use 1 or 0"
+    raw = normalize_newlines(strip_invisible(raw))
     if not raw:
         return False, "text cannot be empty"
     if len(raw) > 4000:
@@ -64,7 +67,7 @@ def _keys_kb(group: str):
     rows = db.q("SELECT key, value, type FROM settings WHERE grp=? ORDER BY key", (group,))
     buttons = []
     for r in rows:
-        shown = r["value"] if r["type"] != "text" else "…"
+        shown = r["value"] if r["type"] != "text" else (r["value"] or "").split("\n")[0][:20] + "…"
         buttons.append([(f"{r['key']} = {shown[:20]}", "st", f"k:{r['key']}")])
     buttons.append([("⬅️ Groups", "st", "home")])
     return kb(buttons)
@@ -100,9 +103,12 @@ async def settings_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         pending_set(context, "setting_key", key, q.message.chat_id)
         rng = f" [{row['min']}–{row['max']}]" if row["type"] == "int" and row["min"] is not None else ""
-        await q.message.reply_text(
-            f"{key} ({row['type']}{rng})\n{row['description']}\n\nCurrent:\n{row['value']}\n\nSend the new value.",
-            reply_markup=kb([[("⬅️ Back", "st", f"g:{row['grp']}"), ("✖️ Cancel", "st", "home")]]))
+        r = (Rich().code(key).text(f" · {row['type']}{rng}").nl().italic(row["description"] or "").nl(2)
+             .bold("Current:").nl().quote(normalize_newlines(row["value"] or "") or "—").nl(2)
+             .text("Send the new value." + (" Line breaks are kept." if row["type"] == "text" else "")))
+        text, ents = r.build()
+        await q.message.reply_text(text, entities=ents,
+                                   reply_markup=kb([[("⬅️ Back", "st", f"g:{row['grp']}"), ("✖️ Cancel", "st", "home")]]))
 
 
 @require("admin")
@@ -114,8 +120,22 @@ async def settings_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     ok, result = set_setting(key, update.message.text or "", update.effective_user.id)
     pending_clear(context, "setting_key")
-    await update.message.reply_text(f"✅ {key} = {result[:200]}" if ok else f"❌ {result}",
-                                    reply_markup=kb([[("⬅️ Settings", "st", "home"), ("⚙️ Admin", "hub", "home")]]))
+    await _confirm_setting(update.message, key, ok, result)
+
+
+async def _confirm_setting(message, key: str, ok: bool, result: str) -> None:
+    """Confirm and, for texts, show exactly what users will see."""
+    markup = kb([[("⬅️ Settings", "st", "home"), ("⚙️ Admin", "hub", "home")]])
+    if not ok:
+        await message.reply_text(f"❌ {result}", reply_markup=markup)
+        return
+    row = db.one("SELECT type FROM settings WHERE key=?", (key,))
+    if row and row["type"] == "text":
+        await message.reply_text(f"✅ {key} saved. Preview:")
+        text, ents = render_setting_text(result)
+        await message.reply_text(text, entities=ents, reply_markup=markup)
+    else:
+        await message.reply_text(f"✅ {key} = {result}", reply_markup=markup)
 
 
 @require("admin")
@@ -123,11 +143,14 @@ async def set_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_private_chat(update):
         return
     if len(context.args or []) < 2:
-        await staff_reply(update, "Usage: /set <key> <value>")
+        await staff_reply(update, "Usage: /set <key> <value>  (multi-line text is kept as typed)")
         return
-    key, value = context.args[0], " ".join(context.args[1:])
+    key = context.args[0]
+    # take the value from the raw message so newlines survive (context.args splits on them)
+    raw = update.message.text or ""
+    value = raw.split(None, 2)[2] if len(raw.split(None, 2)) > 2 else ""
     ok, result = set_setting(key, value, update.effective_user.id)
-    await staff_reply(update, f"✅ {key} = {result[:200]}" if ok else f"❌ {result}")
+    await _confirm_setting(update.message, key, ok, result)
 
 
 @require("admin")
@@ -195,7 +218,8 @@ async def import_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 @require("admin")
 async def post_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     env = context.bot_data["env"]
-    msg = await context.bot.send_message(env.channel_id, cfg("rules_text", ""))
+    text, ents = render_setting_text(cfg("rules_text", ""))
+    msg = await context.bot.send_message(env.channel_id, text, entities=ents)
     try:
         await context.bot.pin_chat_message(env.channel_id, msg.message_id, disable_notification=True)
     except TelegramError:  # nosec B110 - pinning is best-effort; the post itself succeeded

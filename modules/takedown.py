@@ -15,6 +15,7 @@ from telegram.ext import (
 
 import db
 from config import cfg
+from fmt import Rich, card
 from common import alert_admins, dispatch_nav, show_rules, staff_name, staff_reply, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from i18n import t
 from security import author_hash, require, verify_cb
@@ -112,7 +113,8 @@ async def request_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     requester = author_hash(update.effective_user.id)
     db.execute("UPDATE users SET last_takedown_req=? WHERE author=?", (db.now(), requester))
     db.audit(0, "takedown_request", f"post:{number}", f"{requester[:12]} {reason}")
-    await alert_admins(context, f"🛑 Takedown request for #{number}\nReason: {reason}", kind="takedowns",
+    ttext, tents = card(f"🛑 Takedown request · #{number}", [("Reason", "see below")], reason).build()
+    await alert_admins(context, ttext, kind="takedowns", entities=tents,
                        reply_markup=kb([[("Take down", "td", f"go:{number}"), ("Ignore", "td", f"ignore:{number}")]]))
     await send_home(update.message, lang, t(lang, "takedown.sent"))
     return ConversationHandler.END
@@ -147,10 +149,10 @@ async def takedown_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if action == "go" and number is not None:
         ok = await take_down(context, number, update.effective_user.id, "takedown request")
         await q.answer("Done" if ok else "Already gone")
-        await q.message.edit_text(q.message.text + f"\n\n🛑 taken down by {staff_name(update.effective_user.id)}")
+        await _append(q, f"🛑 Taken down by {staff_name(update.effective_user.id)}")
     else:
         await q.answer("Noted")
-        await q.message.edit_text(q.message.text + f"\n\n✅ reviewed by {staff_name(update.effective_user.id)}, left up")
+        await _append(q, f"✅ Reviewed by {staff_name(update.effective_user.id)} — left up")
 
 
 async def mine_delete_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,12 +170,20 @@ async def mine_delete_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await q.message.reply_text(t(lang, "delete.not_yours"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return
     if action == "del":
-        await q.message.reply_text(f"Delete #{number}? This removes it from the channel and hides its comments.",
-                                   reply_markup=kb([[("🗑 Yes, delete", "mine", f"delok:{number}"), (t(lang, "menu.back"), "menu", "mine")]]))
+        await q.message.reply_text(t(lang, "mine.confirm_delete", number=number),
+                                   reply_markup=kb([[(t(lang, "mine.btn_confirm_delete"), "mine", f"delok:{number}"), (t(lang, "menu.back"), "menu", "mine")]]))
         return
     if action == "delok":
         await take_down(context, number, 0, "author", by_author=True)
         await send_home(q.message, lang, t(lang, "delete.done", number=number))
+
+
+async def _append(q, suffix: str) -> None:
+    text, ents = Rich().text(q.message.text or "").nl(2).italic(suffix).build()
+    try:
+        await q.message.edit_text(text, entities=list(q.message.entities or []) + ents, reply_markup=None)
+    except TelegramError:
+        pass
 
 
 def register(app: Application) -> None:

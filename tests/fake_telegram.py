@@ -125,7 +125,13 @@ class FakeRequest(BaseRequest):
             self.calls.append(Sent(api, chat_id, _int(params.get("message_id")), str(params.get("text", "")), None, params))
             return self._ok(True)
         if api == "getChat":
-            return self._ok({"id": chat_id, "type": "channel", "title": "Test", "username": self.channel_username})
+            info = {"id": chat_id, "type": "channel", "title": "Test", "accent_color_id": 0, "max_reaction_count": 11}
+            if self.channel_username:
+                info["username"] = self.channel_username
+            return self._ok(info)
+        if api == "exportChatInviteLink":
+            self.calls.append(Sent(api, chat_id, None, "", None, params))
+            return self._ok("https://t.me/+InViTeLiNk123")
         if api == "getChatMemberCount":
             return self._ok(self.member_count)
         if api == "createForumTopic":

@@ -56,7 +56,7 @@ async def test_flagged_publishes_with_notice_and_one_tap_takedown(h):
     await h.run_job(poster_job)
     assert db.scalar("SELECT count(*) FROM posts") == 1
     notice = _group_cards(h)[-1]
-    assert notice.params.get("message_thread_id") == 77 and "Flagged confession #1" in notice.text and "Mod Mary" in notice.text
+    assert notice.params.get("message_thread_id") == 77 and "Flagged post is live · #1" in notice.text and "Mod Mary" in notice.text
     assert notice.button("Take down") and notice.button("Fine")
     await h.press(ADMIN, "Take down", message=notice, chat_id=ADMIN_GROUP)
     assert db.scalar("SELECT deleted FROM posts WHERE number=1") == 1
@@ -144,7 +144,7 @@ async def test_alerts_route_to_topics_and_fall_back_to_main(h):
     await h.say(S2, "1")
     await h.say(S2, "identifies me")
     td = _group_cards(h)[-1]
-    assert "Takedown request" in td.text and td.params.get("message_thread_id") == 31
+    assert "Takedown request · #1" in td.text and td.params.get("message_thread_id") == 31
     # unconfigured kind → main chat
     from jobs.housekeeping import housekeeping_job
     h.set("queue_alert_threshold", 1)
@@ -237,7 +237,7 @@ async def test_admin_hub_catalog_and_wordlist(h):
     await h.say(ADMIN, "foo, bar\nbaz")
     assert db.scalar("SELECT count(*) FROM wordlist WHERE kind='block' AND word IN ('foo','bar','baz')") == 3
     await h.press(ADMIN, "Back")
-    await h.press(ADMIN, "✖ foo")
+    await h.press(ADMIN, "✖️ foo")
     assert db.scalar("SELECT count(*) FROM wordlist WHERE word='foo'") == 0
 
 

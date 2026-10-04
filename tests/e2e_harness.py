@@ -167,7 +167,7 @@ async def h(tmp_path, monkeypatch):
 
     req = FakeRequest()
     bot = ExtBot(token=env.bot_token, request=req, get_updates_request=FakeRequest())
-    application = ApplicationBuilder().bot(bot).post_init(appmod.post_init).concurrent_updates(False).build()
+    application = ApplicationBuilder().bot(bot).concurrent_updates(False).build()
     application.bot_data["env"] = env
     application.add_error_handler(appmod.on_error)
     appmod.register_modules(application)
@@ -176,6 +176,7 @@ async def h(tmp_path, monkeypatch):
     application.bot_data["verify_client"] = VerifyClient(env.verify_base_url, env.verify_api_key,
                                                          client=httpx.AsyncClient(transport=verify.transport()))
     await application.initialize()
+    await appmod.post_init(application)
     await application.start()
     req.clear()
     harness = Harness(application, req, verify, env)

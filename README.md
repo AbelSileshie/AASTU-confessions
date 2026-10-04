@@ -25,6 +25,7 @@ db.py               SQLite (WAL), migrations, helpers
 security.py         author hash, chat_ref encryption, signed callbacks, @require(role)
 textfilter.py       normalisation, link/phone/mention detection, block/risk words
 payments.py         Verify.et client + acceptance checks (shared service)
+fmt.py              UTF-16-aware rich text builder (entities, never parse_mode)
 ops.py              staff/catalog/wordlist/stats operations shared by commands and /admin menus
 common.py           shared helpers for modules
 modules/            core submit review comments staff admin settings catalog wordlist ads ads_admin takedown stats
@@ -69,7 +70,7 @@ them the invite link. Add receiving accounts with `/payout_accounts add telebirr
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q            # 196 tests, ~20 s
+.venv/bin/python -m pytest -q            # 215 tests, ~25 s
 .venv/bin/bandit -q -r . -x ./.venv,./tests
 .venv/bin/pip-audit
 ```
@@ -118,7 +119,9 @@ give the bot *Manage topics*, then `⚙️ Admin → Group setup → Create topi
 
 ## Student extras
 
-`📝 My confessions` shows the status of recent submissions (pending / live #N / not approved /
+Students only ever see their own confessions (`📝 My confessions`); there is no public listing inside the bot.
+Live notifications carry `📣 Open in channel` and `💬 Comments` buttons (plus `➕ Join the channel` when the channel is
+private). `📝 My confessions` shows the status of recent submissions (pending / live #N / not approved /
 deleted) with Delete and Thread buttons. Authors get one grouped DM for new comments at most every
 `comment_notify_interval_sec`. Advertisers manage orders in `/myads` (re-open pay screen, cancel,
 ✉️ Contact admin → 💰 Ads topic).

@@ -41,7 +41,8 @@ async def test_start_sets_persistent_keyboard_and_hub(h):
     await h.say(S, "/start")
     welcome, hub = h.tg.sent_to(S)[-2:]
     labels = welcome.reply_labels()
-    assert {"✍️ Confess", "💬 Browse recent", "📢 Advertise", "📜 Rules", "❓ Help", "🌐 Language"} <= set(labels)
+    assert {"✍️ Confess", "📝 My confessions", "📢 Advertise", "📜 Rules", "❓ Help", "🌐 Language"} <= set(labels)
+    assert "💬 Browse recent" not in labels  # students never list other people's posts
     assert welcome.markup["is_persistent"] is True
     assert hub.button("Confess")
 
@@ -51,8 +52,8 @@ async def test_bottom_labels_route_everywhere(h):
     assert "Rules" in h.last(S).text and h.last(S).button("Request takedown")
     await h.say(S, "❓ Help")
     assert "How it works" in h.last(S).text
-    await h.say(S, "💬 Browse recent")
-    assert "Nothing posted yet" in h.last(S).text
+    await h.say(S, "📝 My confessions")
+    assert "haven't sent" in h.last(S).text
     await h.say(S, "🌐 Language")
     assert h.last(S).button("አማርኛ")
     await h.say(S, "✍️ Confess")
@@ -100,7 +101,7 @@ async def test_inline_cancel_leaves_flow_and_shows_keyboard(h):
     assert "cancelled" in h.last(S).text.lower() and h.last(S).reply_labels()
     # conversation really ended: free text now hits the fallback, not the flow
     await h.say(S, "hello")
-    assert "didn't catch" in h.last(S).text
+    assert "isn't a command" in h.last(S).text
     assert db.scalar("SELECT count(*) FROM submissions") == 0
 
 
@@ -127,7 +128,7 @@ async def test_free_text_offer_to_confess(h):
 
 async def test_short_free_text_gets_guidance(h):
     await h.say(S, "hi")
-    assert "didn't catch" in h.last(S).text and h.last(S).reply_labels()
+    assert "isn't a command" in h.last(S).text and h.last(S).reply_labels()
     await h.say(S, "/whatever")
     assert "How it works" in h.last(S).text
 
@@ -147,12 +148,20 @@ async def test_comment_prompt_has_exits_and_back_returns_to_thread(h):
     assert _dead_ends(h, S2) == []
 
 
-async def test_browse_links_to_threads(h):
+async def test_staff_recent_monitor_and_student_isolation(h):
     await _post_one(h)
-    await h.say(S2, "💬 Browse recent")
-    assert h.last(S2).button("#1")
-    await h.press(S2, "#1")
-    assert "Comments on #1" in h.last(S2).text
+    # staff monitor
+    await h.say(MOD, "📰 Recent")
+    mon = h.last(MOD)
+    assert "#1" in mon.text and mon.button("💬 #1") and mon.button("🛑 #1") and mon.button("↗ #1")["url"].startswith("https://t.me/")
+    await h.press(MOD, "💬 #1")
+    assert "Comments on #1" in h.last(MOD).text
+    # student: label does nothing special, stale browse callback shows only their own list
+    await h.say(S2, "📰 Recent")
+    assert "#1" not in h.last(S2).text
+    from security import sign_cb
+    await h.press_raw(S2, sign_cb("menu", "browse"))
+    assert "haven't sent" in h.last(S2).text and "#1" not in h.last(S2).text
 
 
 async def test_ad_flow_back_and_cancel(h):
@@ -228,8 +237,7 @@ async def test_full_student_journey_has_no_dead_ends(h):
     await _post_one(h)
     await h.say(S2, "/start")
     await h.say(S2, "❓ Help")
-    await h.say(S2, "💬 Browse recent")
-    await h.press(S2, "#1")
+    await h.say(S2, "/start c_1")
     await h.press(S2, "Write a comment")
     await h.say(S2, "nice one")
     await h.say(S2, "✍️ Confess")

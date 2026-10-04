@@ -11,7 +11,8 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import TOPICS, TOPIC_NAMES, bot_link, fmt_ts, is_private_chat, kb, pending_clear, pending_get, pending_set, send_ad_cards
+from common import TOPICS, TOPIC_NAMES, bot_link, fmt_ts, is_private_chat, kb, pending_clear, pending_get, pending_set, send_ad_cards, staff_name
+from fmt import Rich
 from config import cfg, invalidate
 from ops import (
     CATEGORY_FIELDS,
@@ -49,6 +50,7 @@ def home_screen(uid: int):
         [("🏷 Categories", "hub", "cats"), ("📦 Packages", "hub", "pkgs")],
         [("🚫 Wordlist", "hub", "words"), ("💰 Ads", "hub", "ads")],
         [("💬 Group setup", "hub", "group"), ("🩺 Health", "hub", "health")],
+        [("📰 Recent posts", "hub", "recent")],
     ]
     if owner:
         rows.insert(2, [("🏦 Payout accounts", "hub", "pay")])
@@ -56,7 +58,7 @@ def home_screen(uid: int):
 
 
 def staff_screen(uid: int):
-    rows = [[(f"{'👑' if r['role']=='admin' else '🛡'} {r['display'] or r['user_id']}{' 🟢' if r['on_shift'] else ''}",
+    rows = [[(f"{'👑' if r['role']=='admin' else '🛡'} {staff_name(r['user_id'])}{' 🟢' if r['on_shift'] else ''}",
               "hub", f"staff:{r['user_id']}")] for r in staff_list()]
     invites = [("➕ Invite moderator", "hub", "staff:invite:moderator")]
     if can_assign(uid, "admin"):
@@ -76,12 +78,13 @@ def person_screen(uid: int, target: int):
     if row["role"] == "admin" and can_assign(uid, "admin"):
         actions.append(("🛡 Make moderator", "hub", f"staff:{target}:role:moderator"))
     rows = [actions] if actions else []
-    rows.append([("🗑 Remove", "hub", f"staff:{target}:remove"), ("📜 Audit", "hub", f"staff:{target}:audit")])
+    rows.append([("🗑️ Remove", "hub", f"staff:{target}:remove"), ("📜 Audit", "hub", f"staff:{target}:audit")])
     rows.append([("⬅️ Back", "hub", "staff")])
     decisions = db.scalar("SELECT count(*) FROM audit WHERE actor=? AND action IN ('approve','reject','final_post') AND at>?",
                           (target, db.now() - 7 * 86400), 0)
-    return (f"{row['display'] or target} · {row['role']}\nid {target} · decisions last 7d: {decisions}"
-            f"{' · on shift 🟢' if row['on_shift'] else ''}"), kb(rows)
+    text, ents = (Rich().bold(f"{'👑' if row['role']=='admin' else '🛡'} {staff_name(target)}").text(f" · {row['role']}").nl()
+                  .label("Decisions (7d)", str(decisions)).text("   ").label("Shift", "🟢 on" if row["on_shift"] else "off").build())
+    return (text, ents), kb(rows)
 
 
 def cats_screen():
@@ -134,7 +137,7 @@ def words_screen(kind: str):
     items = words(kind)
     rows, row = [], []
     for w in items[:40]:
-        row.append((f"✖ {w['word']}", "hub", f"word:{w['id']}:del:{kind}"))
+        row.append((f"✖️ {w['word']}", "hub", f"word:{w['id']}:del:{kind}"))
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -156,7 +159,14 @@ def group_screen():
 
 
 def health_screen():
-    return health_text(db.now()), kb([[("🔄 Refresh", "hub", "health"), BACK]])
+    return health_text(db.now(), staff_name), kb([[("🔄 Refresh", "hub", "health"), BACK]])
+
+
+def _pretty_target(target: str | None) -> str:
+    """Audit targets that are bare staff ids → names."""
+    if target and target.isdigit():
+        return staff_name(int(target))
+    return target or ""
 
 
 def ads_screen():
@@ -171,10 +181,13 @@ def ads_screen():
 
 async def _render(q, screen) -> None:
     text, markup = screen
+    ents = None
+    if isinstance(text, tuple):
+        text, ents = text
     try:
-        await q.message.edit_text(text, reply_markup=markup)
+        await q.message.edit_text(text, entities=ents, reply_markup=markup)
     except TelegramError:
-        await q.message.reply_text(text, reply_markup=markup)
+        await q.message.reply_text(text, entities=ents, reply_markup=markup)
 
 
 @require("admin")
@@ -182,7 +195,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_private_chat(update):
         return
     text, markup = home_screen(update.effective_user.id)
-    await update.message.reply_text(text, reply_markup=markup)
+    await update.message.reply_text(text, reply_markup=markup)  # title only, no entities needed
 
 
 @require("admin")
@@ -223,6 +236,10 @@ async def hub_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif screen == "ads":
         await _render(q, ads_screen())
         await send_ad_cards(q.message)
+    elif screen == "recent":
+        from common import show_recent_staff
+
+        await show_recent_staff(q.message, context)
 
 
 async def _staff(q, context, uid: int, rest: list[str]) -> None:
@@ -252,8 +269,13 @@ async def _staff(q, context, uid: int, rest: list[str]) -> None:
         return
     elif action == "audit":
         rows = db.q("SELECT * FROM audit WHERE actor=? ORDER BY id DESC LIMIT 15", (target,))
-        body = "\n".join(f"{fmt_ts(r['at'])} · {r['action']} {r['target'] or ''}" for r in rows) or "no actions yet"
-        await q.message.reply_text(body, reply_markup=kb([[("⬅️ Back", "hub", f"staff:{target}")]]))
+        r = Rich().bold(f"📜 Audit · {staff_name(target)}").text(" ").code(f"(id {target})")
+        for a in rows:
+            r.nl().text(f"{fmt_ts(a['at'])} · {a['action']} {_pretty_target(a['target'])}")
+        if not rows:
+            r.nl().text("no actions yet")
+        text, ents = r.build()
+        await q.message.reply_text(text, entities=ents, reply_markup=kb([[("⬅️ Back", "hub", f"staff:{target}")]]))
         return
     await _render(q, person_screen(uid, target))
 

@@ -47,14 +47,14 @@ async def test_my_confessions_shows_every_status(h):
     await h.press(MOD, "spam")
     await h.say(S, "📝 My confessions")
     mine = h.last(S)
-    assert f"live as #{n}" in mine.text and "waiting for review" in mine.text and "not approved (spam)" in mine.text
+    assert f"Live as #{n}" in mine.text and "Waiting for review" in mine.text and "Not approved — spam" in mine.text
     assert mine.button(f"💬 #{n}") and mine.button(f"Delete #{n}")
     await h.press(S, f"Delete #{n}")
     assert "Delete #" in h.last(S).text and h.last(S).button("Yes, delete")
     await h.press(S, "Yes, delete")
     assert db.scalar("SELECT deleted FROM posts WHERE number=?", (n,)) == 1
     await h.say(S, "📝 My confessions")
-    assert "deleted" in h.last(S).text
+    assert "Deleted" in h.last(S).text
 
 
 async def test_my_confessions_delete_is_author_bound(h):
@@ -170,6 +170,7 @@ async def test_contact_admin_reaches_ads_topic_and_admin_can_reply(h):
     await _setup(h)
     h.set("topic_ads", 42)
     ad_id = await _order(h)
+    db.execute("UPDATE advertisers SET name='Campus Café' WHERE user_id=?", (ADV,))
     await h.say(ADV, "/myads")
     await h.press(ADV, f"#{ad_id}")
     await h.press(ADV, "Contact admin")
@@ -177,8 +178,8 @@ async def test_contact_admin_reaches_ads_topic_and_admin_can_reply(h):
     await h.say(ADV, "I paid but typed the reference wrong, please help")
     assert "Sent" in h.last(ADV).text and h.last(ADV).reply_labels()
     card = [c for c in h.tg.calls if c.chat_id == ADMIN_GROUP and c.method == "sendMessage"][-1]
-    assert f"ad #{ad_id}" in card.text and "typed the reference wrong" in card.text and card.params.get("message_thread_id") == 42
-    assert str(ADV) not in card.text  # advertiser identity not echoed into the group text
+    assert f"Order #{ad_id}" in card.text and "typed the reference wrong" in card.text and card.params.get("message_thread_id") == 42
+    assert str(ADV) not in card.text and "Campus Café" in card.text  # name, never the raw id
     # admin replies from the topic
     await h.press(ADMIN, "Reply", message=card, chat_id=ADMIN_GROUP)
     await h.say(ADMIN, "No problem, send the correct reference via My ads.", chat_id=ADMIN_GROUP)
@@ -232,7 +233,7 @@ async def test_hub_ads_screen_shows_actionable_cards(h):
     await h.say(ADMIN, "/admin")
     await h.press(ADMIN, "Ads")
     card = h.last(ADMIN)
-    assert "Ad #1" in card.text and card.button("Approve & schedule")
+    assert "Order #1" in card.text and card.button("Approve & schedule")
     await h.press(ADMIN, "Approve & schedule")
     assert db.scalar("SELECT status FROM ads") == "scheduled"
     await h.say(ADMIN, "/ads")

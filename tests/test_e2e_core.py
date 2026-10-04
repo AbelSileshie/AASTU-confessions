@@ -39,7 +39,7 @@ async def test_full_confession_lifecycle(h):
     # moderator reviews
     await h.say(MOD, "/next")
     card = h.last(MOD)
-    assert CONFESSION in card.text and "queue: 1" in card.text
+    assert CONFESSION in card.text and "Queue: 1" in card.text
     await h.press(MOD, "Approve")
     assert db.scalar("SELECT count(*) FROM submissions") == 0
     assert db.scalar("SELECT count(*) FROM outbox") == 1
@@ -49,14 +49,16 @@ async def test_full_confession_lifecycle(h):
     await h.run_job(poster_job)
     posted = [c for c in h.tg.calls if c.chat_id == CHANNEL and c.method == "sendMessage"]
     assert len(posted) == 1
-    assert posted[0].text.startswith("Confession #1\n") and CONFESSION in posted[0].text and "#Campus" in posted[0].text
+    assert posted[0].text.startswith("🏫 Confession #1\n") and CONFESSION in posted[0].text and "#Campus" in posted[0].text
     assert "parse_mode" not in posted[0].params or not posted[0].params["parse_mode"]
     assert posted[0].button("Comments (0)")["url"].endswith("?start=c_1")
     assert db.scalar("SELECT count(*) FROM outbox") == 0
     assert db.scalar("SELECT number FROM posts") == 1
 
     # author notified via encrypted chat_ref
-    assert any("live as #1" in t for t in h.texts(STUDENT))
+    live = [c for c in h.tg.sent_to(STUDENT) if "live as #1" in c.text][-1]
+    assert live.button("Open in channel")["url"] == f"https://t.me/{h.tg.channel_username}/{posted[0].message_id}"
+    assert live.button("Comments")["url"].endswith("?start=c_1")
 
     # author deletes their own post; other user cannot
     await h.say(STUDENT2, "/delete 1")
@@ -228,7 +230,7 @@ async def test_takedown_request_and_moderator_action(h):
     await h.say(STUDENT2, "1")
     await h.say(STUDENT2, "it identifies me")
     alert = h.last(ADMIN_GROUP)
-    assert "Takedown request for #1" in alert.text
+    assert "Takedown request · #1" in alert.text
     await h.press(MOD, "Take down", message=alert, chat_id=ADMIN_GROUP)
     assert db.scalar("SELECT deleted FROM posts WHERE number=1") == 1
 
@@ -240,7 +242,7 @@ async def test_queue_alert_and_stats(h):
     await h.run_job(housekeeping_job)
     assert "Review queue is at 1" in h.last(ADMIN_GROUP).text
     await h.say(MOD, "/stats")
-    assert "Queue 1" in h.last(MOD).text
+    assert "Queue: 1" in h.last(MOD).text
 
 
 async def test_group_chat_commands_ignored(h):

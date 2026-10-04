@@ -6,11 +6,13 @@ import json
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
+
+from fmt import CAPTION_LIMIT, Rich, card
 from telegram.error import RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
 import db
-from common import alert_admins, bot_link, category, kb, notify_author, post_link, staff_name, user_lang
+from common import alert_admins, bot_link, category, kb, live_buttons, notify_author, post_link, staff_name, user_lang
 from config import cfg
 from i18n import t
 
@@ -54,16 +56,25 @@ def due(now: int) -> bool:
 # Formatting
 # ---------------------------------------------------------------------------
 
-def format_confession(number: int, text: str, hashtag: str) -> tuple[str, list[MessageEntity]]:
-    header = f"Confession #{number}"
-    body = f"{header}\n\n{text}\n\n{hashtag}"
-    return body, [MessageEntity(MessageEntity.BOLD, 0, len(header))]
+def format_confession(number: int, text: str, hashtag: str, cat_label: str = "") -> tuple[str, list[MessageEntity]]:
+    """Bold header (with the category's emoji), literal body, hashtag. Long posts fold into an
+    expandable quote so the channel stays scannable."""
+    emoji = cat_label.split(" ")[0] if cat_label and not cat_label[0].isalnum() else ""
+    header = f"{emoji + ' ' if emoji else ''}Confession #{number}"
+    r = Rich().bold(header).nl(2)
+    if len(text) > 700:
+        r.quote(text, expandable=True)
+    else:
+        r.text(text)
+    return r.nl(2).text(hashtag).build()
 
 
-def format_ad(text: str) -> tuple[str, list[MessageEntity]]:
-    footer = cfg("ad_footer", "📢 Sponsored")
-    body = f"{text}\n\n{footer}"
-    return body, [MessageEntity(MessageEntity.ITALIC, len(body) - len(footer), len(footer))]
+def format_ad(text: str, bot_username: str = "") -> tuple[str, list[MessageEntity]]:
+    """Sponsored label on top (disclosure), advertiser text literal, 'Advertise with us' footer."""
+    r = Rich().bold(cfg("ad_footer", "📢 Sponsored")).nl(2).text(text).nl(2)
+    url = f"https://t.me/{bot_username}?start=advertise" if bot_username else ""
+    r.link("Advertise with us ↗", url) if url else r.italic("Advertise with us via the bot")
+    return r.build(limit=CAPTION_LIMIT)
 
 
 def comments_button(context: ContextTypes.DEFAULT_TYPE, number: int, count: int) -> InlineKeyboardMarkup:
@@ -116,7 +127,7 @@ async def _post_confession(context, item: dict, now: int) -> None:
     env = context.bot_data["env"]
     number = _reserve_number()
     cat = category(item["category_id"])
-    text, entities = format_confession(number, item["text"], cat["hashtag"])
+    text, entities = format_confession(number, item["text"], cat["hashtag"], cat["label"])
     msg = await context.bot.send_message(
         env.channel_id, text, entities=entities, reply_markup=comments_button(context, number, 0),
         disable_web_page_preview=True,
@@ -133,23 +144,21 @@ async def _post_confession(context, item: dict, now: int) -> None:
         _set_meta("posts_since_ad", _meta("posts_since_ad") + 1)
     if item["author"]:
         lang = user_lang(item["author"])
-        await notify_author(context, item["author"],
-                            t(lang, "notify.live", number=number, link=post_link(context, msg.message_id)),
-                            disable_web_page_preview=True)
+        await notify_author(context, item["author"], t(lang, "notify.live", number=number),
+                            reply_markup=live_buttons(context, lang, number, msg.message_id), disable_web_page_preview=True)
     if hits:
-        await alert_admins(
-            context,
-            f"⚠️ Flagged confession #{number} is live (words: {', '.join(hits)}) · approved by {staff_name(item.get('approved_by'))}\n"
-            f"{post_link(context, msg.message_id)}\n\n{item['text'][:400]}",
-            kind="flagged", disable_web_page_preview=True,
-            reply_markup=kb([[("🛑 Take down", "td", f"go:{number}"), ("✅ Fine", "td", f"ignore:{number}")]]),
-        )
+        ftext, fents = (card(f"⚠️ Flagged post is live · #{number}",
+                             [("Words", ", ".join(hits)), ("Approved by", staff_name(item.get("approved_by")))],
+                             item["text"], body_limit=400)
+                        .nl(2).link("Open post ↗", post_link(context, msg.message_id)).build())
+        await alert_admins(context, ftext, kind="flagged", entities=fents, disable_web_page_preview=True,
+                           reply_markup=kb([[("🛑 Take down", "td", f"go:{number}"), ("✅ Fine", "td", f"ignore:{number}")]]))
 
 
 async def _post_ad(context, item: dict, now: int) -> None:
     env = context.bot_data["env"]
     number = _reserve_number()
-    text, entities = format_ad(item["text"] or "")
+    text, entities = format_ad(item["text"] or "", context.bot_data.get("bot_username", ""))
     markup = _ad_markup(item["buttons"])
     if item["media_file_id"]:
         msg = await context.bot.send_photo(env.channel_id, item["media_file_id"], caption=text,
@@ -185,7 +194,8 @@ async def _post_ad(context, item: dict, now: int) -> None:
         adv = db.one("SELECT user_id FROM advertisers WHERE id=?", (ad["advertiser_id"],))
         if adv:
             try:
-                await context.bot.send_message(adv["user_id"], t("en", "ads.live", link=post_link(context, msg.message_id)))
+                await context.bot.send_message(adv["user_id"], t("en", "ads.live"),
+                                               reply_markup=kb([[("📣 Open in channel", post_link(context, msg.message_id))]]))
             except TelegramError:
                 pass
 

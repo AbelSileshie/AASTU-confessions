@@ -14,8 +14,9 @@ from telegram.ext import (
 )
 
 import db
-from common import alert_admins, dispatch_nav, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, send_home
+from common import advertiser_name, alert_admins, dispatch_nav, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, send_home
 from config import cfg
+from fmt import Rich, card
 from i18n import t
 from payments import BANK_FIELDS, clean_extra, clean_reference, outcome_message, record_payment, verify_payment
 from security import verify_cb
@@ -49,14 +50,17 @@ def ad_preview_markup(btn_text: str | None, btn_url: str | None) -> InlineKeyboa
     return None
 
 
-def pay_screen(ad_id: int, price: int, lang: str) -> tuple[str, InlineKeyboardMarkup] | None:
+def pay_screen(ad_id: int, price: int, lang: str):
+    """((text, entities), keyboard) or None when no payout account is configured."""
     accounts = db.q("SELECT * FROM payout_accounts WHERE enabled=1 ORDER BY sort, id")
     if not accounts:
         return None
-    lines = "\n".join(f"• {BANK_FIELDS.get(a['bank'], {}).get('label', a['bank'])} {a['account']} ({a['holder']})" for a in accounts)
-    text = t(lang, "ads.pay_screen", ad_id=ad_id, price=price, accounts=lines)
+    r = Rich().bold(t(lang, "ads.pay_title", ad_id=ad_id, price=price)).nl(2).text(t(lang, "ads.pay_to")).nl()
+    for a in accounts:
+        r.nl().text(f"• {BANK_FIELDS.get(a['bank'], {}).get('label', a['bank'])} ").code(a["account"]).text(f" — {a['holder']}")
+    r.nl(2).text(t(lang, "ads.pay_then"))
     markup = kb([[(t(lang, "ads.btn_paid"), "ad", f"paid:{ad_id}")], [(t(lang, "ads.btn_cancel_order"), "ad", f"cancel:{ad_id}")]])
-    return text, markup
+    return r.build(), markup
 
 
 def _own_ad(ad_id: int, user_id: int, *statuses: str) -> dict | None:
@@ -233,7 +237,7 @@ async def preview_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not screen:
         await q.message.reply_text(t(lang, "ads.no_accounts"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
-    await q.message.reply_text(*screen[:1], reply_markup=screen[1])
+    await q.message.reply_text(screen[0][0], entities=screen[0][1], reply_markup=screen[1])
     return ConversationHandler.END
 
 
@@ -330,7 +334,7 @@ async def pick_bank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data.pop("pay", None)
         screen = pay_screen(ad["id"], ad["price_etb"], lang) if ad else None
         if screen:
-            await q.message.reply_text(screen[0], reply_markup=screen[1])
+            await q.message.reply_text(screen[0][0], entities=screen[0][1], reply_markup=screen[1])
         return ConversationHandler.END
     acc = db.one("SELECT * FROM payout_accounts WHERE id=? AND enabled=1", (parsed[1],))
     if not acc:
@@ -402,7 +406,7 @@ async def _submit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, la
                 await update.message.reply_text(msg_text)
                 screen = pay_screen(ad["id"], ad["price_etb"], lang)
                 if screen:
-                    await update.message.reply_text(screen[0], reply_markup=screen[1])
+                    await update.message.reply_text(screen[0][0], entities=screen[0][1], reply_markup=screen[1])
     elif kind in ("queued", "retry"):
         await send_home(update.message, lang, t(lang, "ads.queued"))
     elif kind == "invalid":
@@ -410,7 +414,7 @@ async def _submit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, la
         await update.message.reply_text(t(lang, "ads.bad_reference"))
         screen = pay_screen(ad["id"], ad["price_etb"], lang)
         if screen:
-            await update.message.reply_text(screen[0], reply_markup=screen[1])
+            await update.message.reply_text(screen[0][0], entities=screen[0][1], reply_markup=screen[1])
     else:
         await send_home(update.message, lang, t(lang, "ads.needs_review"))
     return ConversationHandler.END
@@ -426,7 +430,7 @@ async def pay_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ad = _own_ad(pay["ad_id"], update.effective_user.id, "awaiting_payment") if pay else None
     screen = pay_screen(ad["id"], ad["price_etb"], lang) if ad else None
     if screen:
-        await msg.reply_text(screen[0], reply_markup=screen[1])
+        await msg.reply_text(screen[0][0], entities=screen[0][1], reply_markup=screen[1])
     else:
         await send_home(msg, lang, t(lang, "nav.cancelled"))
     if update.message and nav_action(update.message.text):
@@ -447,7 +451,7 @@ def _my_orders(user_id: int) -> list[dict]:
 async def show_myads(message, user_id: int, lang: str) -> None:
     rows = _my_orders(user_id)
     if not rows:
-        await message.reply_text("You have no ads yet. Tap 📢 Advertise to start.", reply_markup=nav_keyboard(lang, user_id))
+        await message.reply_text(t(lang, "ads.none_yet"), reply_markup=nav_keyboard(lang, user_id))
         return
     buttons = [[(f"#{r['id']} · {r['name']} · {r['status'].replace('_', ' ')}", "myad", f"show:{r['id']}")] for r in rows]
     buttons.append([(t(lang, "menu.back"), "menu", "home")])
@@ -523,9 +527,11 @@ async def contact_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     db.execute("UPDATE users SET last_contact=? WHERE author=?", (db.now(), author))
     summary = db.one("SELECT a.status, a.price_etb, p.reference, p.status pstatus FROM ads a LEFT JOIN payments p ON p.ad_id=a.id "
                      "WHERE a.id=? ORDER BY p.id DESC LIMIT 1", (ad_id,))
-    await alert_admins(context, f"✉️ Advertiser message about ad #{ad_id} ({summary['status']}, {summary['price_etb']} ETB, "
-                                f"last payment {summary['pstatus'] or '-'} {summary['reference'] or ''}):\n\n{text}",
-                       kind="ads", reply_markup=kb([[("↩️ Reply", "adr", str(ad_id))]]))
+    adv_id = db.scalar("SELECT advertiser_id FROM ads WHERE id=?", (ad_id,))
+    atext, aents = card(f"✉️ Advertiser message · Order #{ad_id}",
+                        [("From", advertiser_name(adv_id)), ("Status", f"{summary['status'].replace('_', ' ')} · {summary['price_etb']} ETB"),
+                         ("Last payment", f"{summary['pstatus'] or '—'} {summary['reference'] or ''}".strip())], text).build()
+    await alert_admins(context, atext, kind="ads", entities=aents, reply_markup=kb([[("↩️ Reply", "adr", str(ad_id))]]))
     db.audit(0, "ad_contact", f"ad:{ad_id}")
     await send_home(update.message, lang, t(lang, "ads.contact_sent"))
     return ConversationHandler.END

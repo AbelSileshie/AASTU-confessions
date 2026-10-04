@@ -6,7 +6,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import is_private_chat, kb, post_link, staff_reply
+from common import is_private_chat, kb, post_link, staff_name, staff_reply
 from ops import gather_stats, health_text
 from security import require
 
@@ -14,7 +14,8 @@ from security import require
 @require("moderator")
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if is_private_chat(update):
-        await update.message.reply_text(health_text(db.now()), reply_markup=kb([[("📋 Queue", "rv", "next:0")]]))
+        text, ents = health_text(db.now(), staff_name)
+        await update.message.reply_text(text, entities=ents, reply_markup=kb([[("📋 Queue", "rv", "next:0")]]))
 
 
 def top_posts(days: int = 7, limit: int = 5) -> list[dict]:

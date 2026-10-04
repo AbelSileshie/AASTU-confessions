@@ -88,8 +88,11 @@ async def purge_declined(context, now: int) -> int:
 
 
 async def housekeeping_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    from common import channel_info
+
     now = db.now()
     try:
+        await channel_info(context)  # no-op within TTL; picks up a channel going public/private
         release_stale_claims(now)
         await purge_declined(context, now)
         expire_submissions(now)

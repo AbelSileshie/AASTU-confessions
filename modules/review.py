@@ -18,6 +18,7 @@ from common import alert_admins, category, pending_clear, pending_get, pending_s
 from config import cfg
 from i18n import t
 from security import has_role, require, verify_cb
+from fmt import Rich, card
 from textfilter import check_text, highlight, strip_invisible
 
 REJECT_REASONS = ("names", "explicit", "spam", "unclear", "other")
@@ -114,16 +115,15 @@ def _queue_size() -> int:
     return db.scalar("SELECT count(*) FROM submissions", default=0) or 0
 
 
-def render_card(sub: dict, queue_size: int) -> str:
+def render_card(sub: dict, queue_size: int):
+    """(text, entities) for the moderator DM card."""
     hits = json.loads(sub.get("risk_hits") or "[]")
     cat = category(sub.get("category_id"))
-    flag = " ⚠️ FLAGGED" if hits else ""
-    return (
-        f"#{sub['id']} · {cat['label']}{flag}\n"
-        f"author strikes: {_strikes(sub['author'])} · queue: {queue_size}\n"
-        f"────────\n{highlight(sub['text'], hits)}\n────────\n"
-        "Names a person? Threat/blackmail? Sexual about a real person? → Reject"
-    )
+    meta = [("Strikes", str(_strikes(sub["author"]))), ("Queue", str(queue_size))]
+    if hits:
+        meta.append(("Flags", ", ".join(hits)))
+    return card(f"📋 Submission #{sub['id']} · {cat['label']}{' · ⚠️ FLAGGED' if hits else ''}", meta,
+                highlight(sub["text"], hits), hint="Check: names a person? threat/blackmail? sexual about a real person? → Reject").build()
 
 
 def card_kb(sub_id: int):
@@ -131,7 +131,7 @@ def card_kb(sub_id: int):
     return kb([
         [("✅ Approve", "rv", f"ok:{s}"), ("✏️ Edit", "rv", f"edit:{s}")],
         [("❌ Reject", "rv", f"rej:{s}"), ("🚫 Ban", "rv", f"ban:{s}")],
-        [("⏭ Skip", "rv", f"skip:{s}"), ("🤔 Escalate", "rv", f"esc:{s}"), ("➡️ Next", "rv", "next:0")],
+        [("⏭️ Skip", "rv", f"skip:{s}"), ("🤔 Escalate", "rv", f"esc:{s}"), ("➡️ Next", "rv", "next:0")],
     ])
 
 
@@ -144,10 +144,10 @@ def ban_kb(sub_id: int):
                [("⬅️ Back", "rv", f"show:{sub_id}")]])
 
 
-def render_declined_card(row: dict) -> str:
+def render_declined_card(row: dict):
     cat = category(row["category_id"])
-    return (f"❌ {cat['label']} · {t('en', 'reject.' + (row['reason'] or 'other'))} · by {staff_name(row['declined_by'])}\n"
-            f"────────\n{row['text']}")
+    return card(f"❌ Declined · {cat['label']}", [("Reason", t("en", "reject." + (row["reason"] or "other"))),
+                                                   ("By", staff_name(row["declined_by"]))], row["text"]).build()
 
 
 def declined_kb(declined_id: int):
@@ -155,22 +155,27 @@ def declined_kb(declined_id: int):
 
 
 async def _send_card(message, sub: dict) -> None:
-    await message.reply_text(render_card(sub, _queue_size()), reply_markup=card_kb(sub["id"]))
+    text, ents = render_card(sub, _queue_size())
+    await message.reply_text(text, entities=ents, reply_markup=card_kb(sub["id"]))
 
 
 async def post_declined_card(context, declined_id: int) -> None:
     row = db.one("SELECT * FROM declined WHERE id=?", (declined_id,))
     if not row:
         return
-    msg = await alert_admins(context, render_declined_card(dict(row)), kind="declined", reply_markup=declined_kb(declined_id))
+    text, ents = render_declined_card(dict(row))
+    msg = await alert_admins(context, text, kind="declined", entities=ents, reply_markup=declined_kb(declined_id))
     if msg:
         db.execute("UPDATE declined SET group_msg_id=? WHERE id=?", (msg.message_id, declined_id))
 
 
 async def _finish_card(q, suffix: str) -> None:
-    """Edit a group card in place: strip buttons, append the outcome."""
+    """Edit a group card in place: strip buttons, append the outcome (italic), keep existing styling."""
+    base = q.message.text or ""
+    r = Rich().text(base).nl(2).italic(suffix)
+    text, ents = r.build()
     try:
-        await q.message.edit_text((q.message.text or "")[:3800] + f"\n\n{suffix}", reply_markup=None)
+        await q.message.edit_text(text, entities=list(q.message.entities or []) + ents[0:], reply_markup=None)
     except TelegramError:
         pass
 
@@ -255,7 +260,8 @@ async def review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         pending_clear(context, "editing")
         await q.answer()
         try:
-            await q.message.edit_text(render_card(sub, _queue_size()), reply_markup=card_kb(sub["id"]))
+            text, ents = render_card(sub, _queue_size())
+            await q.message.edit_text(text, entities=ents, reply_markup=card_kb(sub["id"]))
         except TelegramError:
             await _send_card(q.message, sub)
     elif action == "ok":
@@ -281,8 +287,8 @@ async def review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.message.edit_reply_markup(reply_markup=kb([[("➡️ Next", "rv", "next:0")]]))
     elif action == "esc":
         await q.answer("Escalated")
-        await alert_admins(context, f"🤔 Escalation from {staff_name(mod)} for submission #{sub['id']}:\n\n{sub['text']}",
-                           kind="flagged", reply_markup=kb([[("Take over", "rv", f"take:{sub['id']}")]]))
+        etext, eents = card(f"🤔 Escalation · submission #{sub['id']}", [("From", staff_name(mod))], sub["text"]).build()
+        await alert_admins(context, etext, kind="flagged", entities=eents, reply_markup=kb([[("Take over", "rv", f"take:{sub['id']}")]]))
 
 
 async def _approve(q, sub, mod, context) -> None:

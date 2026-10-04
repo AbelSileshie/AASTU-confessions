@@ -33,9 +33,11 @@ from common import (
     nav_action,
     nav_keyboard,
     nav_regex,
+    normalize_newlines,
     send_home,
 )
 from config import cfg
+from fmt import Rich
 from i18n import t
 from security import verify_cb
 from textfilter import check_text, strip_invisible, text_hash
@@ -117,8 +119,10 @@ async def _ask_text(message, lang: str) -> int:
 
 async def _show_preview(message, context, lang: str) -> int:
     cat = category(context.user_data.get("category_id"))
+    text, ents = (Rich().bold(t(lang, "submit.preview_title")).nl(2).quote(context.user_data["text"]).nl(2)
+                  .text(cat["hashtag"]).nl(2).italic(t(lang, "submit.preview_hint")).build())
     await message.reply_text(
-        t(lang, "submit.preview", text=context.user_data["text"], hashtag=cat["hashtag"]),
+        text, entities=ents,
         reply_markup=kb([
             [(t(lang, "submit.btn_submit"), "sub", "go")],
             [(t(lang, "submit.btn_edit"), "sub", "edit"), ("🏷 " + cat["label"], "sub", "back_cat")],
@@ -267,13 +271,14 @@ async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: st
     except db.sqlite3.IntegrityError:
         await msg.reply_text(t(lang, "submit.duplicate"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
-    reply = cfg("received_text", "")
+    r = Rich().text(normalize_newlines(cfg("received_text", "")))
     banner = active_banner()
     if banner:
-        reply += f"\n\n{banner}"
+        r.nl(2).italic(banner)
     for k in ("category_id", "text", "text_hash", "risk_hits"):
         context.user_data.pop(k, None)
-    await send_home(msg, lang, reply)
+    text, ents = r.build()
+    await msg.reply_text(text, entities=ents, reply_markup=nav_keyboard(lang, update.effective_user.id))
     return ConversationHandler.END
 
 

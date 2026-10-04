@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
 import db
-from common import bot_link, fmt_ts, is_private_chat, staff_reply
+from common import bot_link, fmt_ts, is_private_chat, staff_name, staff_reply
 from ops import ASSIGNABLE_ROLES, can_assign, create_invite, redeem_invite, remove_staff, set_role, set_shift, staff_list
 from security import has_role, require
 
@@ -38,7 +38,7 @@ async def staff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not rows:
             await staff_reply(update, "No staff yet. /staff add")
             return
-        await staff_reply(update, "\n".join(f"{r['user_id']} · {r['role']} · {r['display'] or '-'}{' 🟢' if r['on_shift'] else ''}" for r in rows))
+        await staff_reply(update, "\n".join(f"{staff_name(r['user_id'])} · {r['role']}{' 🟢' if r['on_shift'] else ''}  (id {r['user_id']})" for r in rows))
     elif sub == "role" and len(args) >= 3 and (target := _int(args[1])) is not None:
         ok = set_role(actor, target, args[2])
         await staff_reply(update, "Updated." if ok else "Cannot change that user's role.")
@@ -81,7 +81,7 @@ async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await staff_reply(update, "No audit entries.")
         return
     await staff_reply(update, "\n".join(
-        f"{fmt_ts(r['at'])} · {r['actor']} · {r['action']} {r['target'] or ''} {r['detail'] or ''}" for r in rows))
+        f"{fmt_ts(r['at'])} · {staff_name(r['actor'])} · {r['action']} {r['target'] or ''} {r['detail'] or ''}" for r in rows))
 
 
 def register(app: Application) -> None:

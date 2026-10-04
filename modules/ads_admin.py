@@ -141,7 +141,7 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await q.answer("Marked paid")
             await _notify_advertiser(context, ad_id, t("en", "ads.verified"))
             ad = dict(db.one("SELECT * FROM ads WHERE id=?", (ad_id,)))
-            await _edit(q, "💰 payment accepted manually", markup=ad_card(ad)[1])
+            await _edit(q, "💰 payment accepted manually", markup=ad_card(ad)[1])  # keyboard only
         else:
             await q.answer("Cannot accept.", show_alert=True)
     elif action == "manual_no":
@@ -195,11 +195,18 @@ async def cancel_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def _edit(q, suffix: str, markup=None) -> None:
+    """Append an italic outcome line, keeping the card's existing styling."""
+    from fmt import Rich
+
     try:
         if q.message.caption is not None:
-            await q.message.edit_caption(caption=(q.message.caption or "")[:900] + f"\n\n{suffix}", reply_markup=markup)
+            base = q.message.caption or ""
+            text, ents = Rich().text(base).nl(2).italic(suffix).build(limit=1024)
+            await q.message.edit_caption(caption=text, caption_entities=list(q.message.caption_entities or []) + ents, reply_markup=markup)
         else:
-            await q.message.edit_text((q.message.text or "")[:3800] + f"\n\n{suffix}", reply_markup=markup)
+            base = q.message.text or ""
+            text, ents = Rich().text(base).nl(2).italic(suffix).build()
+            await q.message.edit_text(text, entities=list(q.message.entities or []) + ents, reply_markup=markup)
     except TelegramError:
         pass
 

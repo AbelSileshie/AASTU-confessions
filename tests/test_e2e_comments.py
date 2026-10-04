@@ -79,7 +79,7 @@ async def test_reports_hide_comment_and_alert_admins(h):
     assert db.scalar("SELECT hidden FROM comments WHERE id=?", (cid,)) == 1
     assert db.scalar("SELECT comment_count FROM posts WHERE number=?", (n,)) == 0
     alert = h.last(ADMIN_GROUP)
-    assert "auto-hidden" in alert.text
+    assert "Comment hidden" in alert.text
     await h.press(MOD, "Unhide", message=alert, chat_id=ADMIN_GROUP)
     assert db.scalar("SELECT hidden FROM comments WHERE id=?", (cid,)) == 0
 
@@ -142,7 +142,7 @@ async def test_connect_decline_reveals_nothing(h):
     await h.press(A, "Decline", message=ask)
     assert db.scalar("SELECT status FROM connect_requests") == "declined"
     assert "declined" in h.last(OP).text.lower()
-    assert not any("entities" in c.params and c.params["entities"] for c in h.tg.sent_to(OP))
+    assert not any("text_mention" in str(c.params.get("entities", "")) for c in h.tg.sent_to(OP))
     # replaying the accept button after decline is rejected
     await h.press_raw(A, accept_data, message=ask)
     assert db.scalar("SELECT status FROM connect_requests") == "declined"

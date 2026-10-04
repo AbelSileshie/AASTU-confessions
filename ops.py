@@ -234,17 +234,29 @@ def gather_stats(now: int) -> dict:
     }
 
 
-def health_text(now: int) -> str:
-    """The one stats/health rendering used by /stats, 📊 Stats and ⚙️ Admin → Health."""
+def humanize_age(now: int, ts: int) -> str:
+    if not ts:
+        return "never"
+    d = max(0, now - ts)
+    if d < 3600:
+        return f"{d // 60} min ago"
+    if d < 86400:
+        return f"{d // 3600} h ago"
+    return f"{d // 86400} d ago"
+
+
+def health_text(now: int, name_of=None):
+    """(text, entities) — the one stats/health rendering used by /stats, 📊 Stats and ⚙️ Admin → Health.
+    `name_of(user_id)` resolves staff names (injected to keep ops free of common)."""
+    from fmt import Rich
+
     s = gather_stats(now)
-
-    def age(ts: int) -> str:
-        return f"{(now - ts) // 60} min ago" if ts else "never"
-
-    names = {r["user_id"]: r["display"] or str(r["user_id"]) for r in db.q("SELECT user_id, display FROM staff")}
-    mods = "\n".join(f"  {names.get(m['actor'], m['actor'])}: {m['n']}" for m in s["mods_today"]) or "  –"
-    return (f"🩺 Status\nQueue {s['queue']} (claimed {s['claimed']}) · Ready to post {s['outbox']} · Declined {s['declined']}\n"
-            f"Last post: {age(s['last_post_at'])} · Last backup: {age(s['last_backup_at'])}\n"
-            f"Posted {s['posted_today']} today / {s['posted_7d']} in 7d · Comments today {s['comments_today']}\n"
-            f"Pending ads {s['pending_ads']} · Revenue 30d {s['revenue_30d']} ETB · On shift {s['on_shift']}\n"
-            f"Decisions today:\n{mods}")
+    name_of = name_of or (lambda uid: "System" if not uid else str(uid))
+    r = (Rich().bold("🩺 Status").nl()
+         .label("Queue", f"{s['queue']} ({s['claimed']} claimed)").text(" · ").label("Ready", str(s["outbox"])).text(" · ").label("Declined", str(s["declined"])).nl()
+         .label("Last post", humanize_age(now, s["last_post_at"])).text(" · ").label("Last backup", humanize_age(now, s["last_backup_at"])).nl()
+         .label("Posted", f"{s['posted_today']} today · {s['posted_7d']} in 7d").text(" · ").label("Comments today", str(s["comments_today"])).nl()
+         .label("Ads pending", str(s["pending_ads"])).text(" · ").label("Revenue 30d", f"{s['revenue_30d']} ETB").text(" · ").label("On shift", str(s["on_shift"])).nl(2)
+         .bold("Decisions today").nl())
+    r.text(" · ".join(f"{name_of(m['actor'])} {m['n']}" for m in s["mods_today"]) or "–")
+    return r.build()

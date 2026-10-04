@@ -16,6 +16,7 @@ from telegram.ext import (
 import db
 from common import alert_admins, dispatch_nav, ensure_user, exit_row, is_banned, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from config import cfg
+from fmt import Rich, card
 from i18n import t
 from security import author_hash, decrypt_ref, verify_cb
 from textfilter import check_text, strip_invisible
@@ -54,12 +55,12 @@ def _thread_rows(number: int, before_id: int | None) -> list[dict]:
 
 def render_thread(number: int, rows: list[dict], lang: str, viewer_is_op: bool) -> tuple[str, list]:
     count = db.scalar("SELECT count(*) FROM comments WHERE number=? AND hidden=0", (number,), 0)
-    lines = [t(lang, "comments.title", number=number, count=count)]
+    rich = Rich().bold(t(lang, "comments.title", number=number, count=count))
     if not rows:
-        lines.append(t(lang, "comments.empty"))
+        rich.nl(2).italic(t(lang, "comments.empty"))
     for r in rows:
-        reply = f" ↩︎{r['reply_to']}" if r["reply_to"] else ""
-        lines.append(f"\n[{r['id']}] {r['alias']}{reply}:\n{r['text']}")
+        reply = f" ↩︎ #{r['reply_to']}" if r["reply_to"] else ""
+        rich.nl(2).bold(r["alias"]).text(f" · #{r['id']}{reply}").nl().quote(r["text"])
     buttons = [[(t(lang, "comments.write"), "cm", f"w:{number}")]]
     per_comment = []
     for r in rows[-5:]:
@@ -71,7 +72,7 @@ def render_thread(number: int, rows: list[dict], lang: str, viewer_is_op: bool) 
     if rows and db.one("SELECT 1 FROM comments WHERE number=? AND hidden=0 AND id<?", (number, rows[0]["id"])):
         nav.append((t(lang, "comments.older"), "cm", f"pg:{number}:{rows[0]['id']}"))
     nav.append((t(lang, "menu.back"), "menu", "home"))
-    return "\n".join(lines)[:4000], buttons + per_comment + [nav]
+    return rich.build(), buttons + per_comment + [nav]
 
 
 async def _show_thread(message, update: Update, number: int, before_id: int | None = None) -> None:
@@ -81,8 +82,8 @@ async def _show_thread(message, update: Update, number: int, before_id: int | No
         await message.reply_text(t(lang, "comments.not_found"), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return
     viewer = author_hash(update.effective_user.id)
-    text, rows = render_thread(number, _thread_rows(number, before_id), lang, viewer == post["author"])
-    await message.reply_text(text, reply_markup=kb(rows))
+    (text, ents), rows = render_thread(number, _thread_rows(number, before_id), lang, viewer == post["author"])
+    await message.reply_text(text, entities=ents, reply_markup=kb(rows))
 
 
 async def start_thread(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -235,7 +236,8 @@ async def _report(q, update, context, comment_id: int, lang: str) -> None:
     await q.answer(t(lang, "comments.reported"))
     if outcome == "hidden":
         c = db.one("SELECT number, text FROM comments WHERE id=?", (comment_id,))
-        await alert_admins(context, f"🙈 Comment {comment_id} on #{c['number']} auto-hidden after reports:\n\n{c['text']}", kind="takedowns",
+        ctext, cents = card(f"🙈 Comment hidden · #{c['number']}", [("Comment", f"#{comment_id}"), ("Reason", "reports threshold")], c["text"]).build()
+        await alert_admins(context, ctext, kind="takedowns", entities=cents,
                            reply_markup=kb([[("Unhide", "cma", f"unhide:{comment_id}"), ("Keep hidden", "cma", f"keep:{comment_id}")]]))
 
 
@@ -374,7 +376,7 @@ async def _resolve(q, update, context, rid: int, me: str, accept: bool, lang: st
 
 
 def register(app: Application) -> None:
-    app.add_handler(CommandHandler("start", start_thread, filters=filters.Regex(r"^/start\s+c_\d+")), group=1)
+    app.add_handler(CommandHandler("start", start_thread, filters=filters.Regex(r"(?i)^/start\s+c_\d+")), group=1)
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(comments_cb, pattern=r"^cm:")],
         states={WRITE: [

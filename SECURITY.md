@@ -32,10 +32,28 @@ submit cooldown + daily cap + queue soft cap + open hours · comment cooldown ·
 · connect cooldown + one pending per thread · `max_open_orders` · payment attempts (3) · contact-admin cooldown
 · takedown-request cooldown · strike-based bans · `submissions_open` kill switch.
 
+## Access separation
+
+- Students never see a listing of other people's confessions inside the bot: `💬 Browse recent` was removed; the only
+  list is `📝 My confessions` (own author hash). The `menu:browse` action renders the staff monitor for moderators/admins
+  and the user's own list for everyone else. Comment threads remain reachable through the channel button (public feature).
+- `📰 Recent` (moderators + admins) shows the latest posts with approver, flags and a one-tap take down.
+
+## Links
+
+- Channel links use `t.me/<username>/<msg>` when the channel is public. If it is private the bot falls back to the
+  members-only `t.me/c/…` form **and** attaches a `➕ Join the channel` button using one exported invite link (cached in
+  `meta`, refreshed when the channel info is re-fetched every 10 min). The owner is told at startup when the channel is private.
+- Bot deep links always use the bot's username (resolved in `post_init`, which `app.py` calls explicitly — PTB's
+  `initialize()` alone does not).
+
 ## Input handling
 
-- Text: NFKC + zero-width stripped before filters; links/@mentions/phones/blocklist; length caps everywhere; posted
-  as **plain text** with explicit entities only (no `parse_mode` anywhere).
+- Text: NFKC + zero-width stripped before filters; links/@mentions/phones/blocklist; length caps everywhere.
+- Styling is applied only through `MessageEntity` offsets built by `fmt.Rich` (UTF-16 aware). User/advertiser/setting text
+  only ever goes through `.text()` or as a blockquote *container*; `parse_mode` is never used, so nothing a user types can
+  be interpreted as markup. Entities are truncated with the text so none can point past the end.
+- Humans are shown display names, never raw Telegram ids (`staff_name` falls back to role + short tag; advertisers by name).
 - URLs in ads: `https://` only, hostname required, no Telegram invite links, no shorteners unless allowed, ≤ 500 chars.
 - SQL: parameterised throughout; the only interpolated identifiers are whitelisted constants (annotated `nosec B608`).
 - `/import`: owner only, ≤ 2 MB JSON, whitelisted tables and columns only.
