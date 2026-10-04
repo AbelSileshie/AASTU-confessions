@@ -9,6 +9,7 @@ import json
 from datetime import datetime, timezone
 
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -22,7 +23,6 @@ from telegram.ext import (
 import db
 from common import (
     active_banner,
-    category,
     dispatch_nav,
     ensure_user,
     exit_row,
@@ -90,23 +90,43 @@ def wordlist(kind: str) -> list[str]:
 # Screens
 # ---------------------------------------------------------------------------
 
-def _category_kb(lang: str):
+def _category_screen(lang: str, selected: list[int]):
+    """Multi-select picker: ✅-prefixed toggles, Done / No category / Cancel. (text, entities, keyboard)"""
     cats = db.q("SELECT id, label FROM categories WHERE enabled=1 ORDER BY sort, id")
+    maximum = cfg("max_categories", 3)
     rows, row = [], []
     for c in cats:
-        row.append((c["label"], "cat", str(c["id"])))
+        mark = "✅ " if c["id"] in selected else ""
+        row.append((f"{mark}{c['label']}", "cat", f"t:{c['id']}"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
+    done = t(lang, "submit.btn_done") + (f" ({len(selected)})" if selected else "")
+    rows.append([(done, "cat", "done"), (t(lang, "submit.btn_no_category"), "cat", "none")])
     rows.append([(t(lang, "menu.cancel"), "cat", "cancel")])
-    return kb(rows)
+    first, _, rest = t(lang, "submit.pick_category", n=len(selected), max=maximum).partition("\n")
+    r = Rich().bold(first).nl().text(rest)
+    if selected:
+        names = [c["label"] for c in cats if c["id"] in selected]
+        r.nl().italic(", ".join(names))
+    text, ents = r.build()
+    return text, ents, kb(rows)
 
 
-async def _ask_category(message, lang: str) -> int:
-    await message.reply_text(t(lang, "submit.pick_category"), reply_markup=_category_kb(lang))
+async def _ask_category(message, lang: str, selected: list[int] | None = None) -> int:
+    text, ents, markup = _category_screen(lang, selected or [])
+    await message.reply_text(text, entities=ents, reply_markup=markup)
     return CATEGORY
+
+
+def _selected_categories(context) -> list[dict]:
+    ids = context.user_data.get("category_ids") or []
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    return [dict(r) for r in db.q(f"SELECT * FROM categories WHERE id IN ({marks}) ORDER BY sort, id", ids)]  # nosec B608 - placeholders
 
 
 async def _ask_text(message, lang: str) -> int:
@@ -118,14 +138,16 @@ async def _ask_text(message, lang: str) -> int:
 
 
 async def _show_preview(message, context, lang: str) -> int:
-    cat = category(context.user_data.get("category_id"))
-    text, ents = (Rich().bold(t(lang, "submit.preview_title")).nl(2).quote(context.user_data["text"]).nl(2)
-                  .text(cat["hashtag"]).nl(2).italic(t(lang, "submit.preview_hint")).build())
+    cats = _selected_categories(context)
+    r = Rich().bold(t(lang, "submit.preview_title")).nl(2).quote(context.user_data["text"])
+    if cats:
+        r.nl(2).text(" ".join(c["hashtag"] for c in cats))
+    text, ents = r.nl(2).italic(t(lang, "submit.preview_hint")).build()
     await message.reply_text(
         text, entities=ents,
         reply_markup=kb([
             [(t(lang, "submit.btn_submit"), "sub", "go")],
-            [(t(lang, "submit.btn_edit"), "sub", "edit"), (t(lang, "submit.btn_category", label=cat["label"]), "sub", "back_cat")],
+            [(t(lang, "submit.btn_edit"), "sub", "edit"), (t(lang, "submit.btn_category", n=len(cats)), "sub", "back_cat")],
             [(t(lang, "menu.cancel"), "sub", "cancel")],
         ]),
     )
@@ -133,7 +155,7 @@ async def _show_preview(message, context, lang: str) -> int:
 
 
 async def _leave(message, context, lang: str, text_key: str = "nav.cancelled") -> int:
-    context.user_data.pop("category_id", None)
+    context.user_data.pop("category_ids", None)
     context.user_data.pop("text", None)
     context.user_data.pop("text_hash", None)
     context.user_data.pop("risk_hits", None)
@@ -159,7 +181,7 @@ async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await msg.reply_text(t(lang, blocked[0], **blocked[1]), reply_markup=nav_keyboard(lang, update.effective_user.id))
         return ConversationHandler.END
     offered = context.user_data.pop("offered_text", None)
-    for k in ("category_id", "text", "text_hash", "risk_hits"):
+    for k in ("category_ids", "text", "text_hash", "risk_hits"):
         context.user_data.pop(k, None)
     if offered and update.callback_query and update.callback_query.data.startswith("menu:confess_offer:"):
         context.user_data["pending_offer"] = offered
@@ -169,14 +191,39 @@ async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def pick_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
     parsed = verify_cb(q.data)
-    await q.answer()
     lang = lang_of(update)
     if not parsed or parsed[1] == "cancel":
+        await q.answer()
         return await _leave(q.message, context, lang)
-    cat = db.one("SELECT id FROM categories WHERE id=? AND enabled=1", (parsed[1],))
-    if not cat:
+    action = parsed[1]
+    selected: list[int] = list(context.user_data.get("category_ids") or [])
+    if action.startswith("t:"):
+        cat = db.one("SELECT id FROM categories WHERE id=? AND enabled=1", (action[2:],))
+        if not cat:
+            await q.answer()
+            return CATEGORY
+        if cat["id"] in selected:
+            selected.remove(cat["id"])
+        elif len(selected) >= cfg("max_categories", 3):
+            await q.answer(t(lang, "submit.too_many_categories", max=cfg("max_categories", 3)))
+            return CATEGORY
+        else:
+            selected.append(cat["id"])
+        context.user_data["category_ids"] = selected
+        await q.answer()
+        text, ents, markup = _category_screen(lang, selected)
+        try:
+            await q.message.edit_text(text, entities=ents, reply_markup=markup)
+        except BadRequest as exc:
+            if "not modified" not in str(exc):
+                await q.message.reply_text(text, entities=ents, reply_markup=markup)
         return CATEGORY
-    context.user_data["category_id"] = cat["id"]
+    await q.answer()
+    if action == "none":
+        selected = []
+        context.user_data["category_ids"] = []
+    elif action != "done":
+        return CATEGORY
     offered = context.user_data.pop("pending_offer", None)
     if offered:
         state = await _accept_text(q.message, context, lang, offered)
@@ -232,7 +279,7 @@ async def flow_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if action == "cancel":
         return await _leave(q.message, context, lang)
     if action == "back_cat":
-        return await _ask_category(q.message, lang)
+        return await _ask_category(q.message, lang, context.user_data.get("category_ids"))
     if action == "edit":
         return await _ask_text(q.message, lang)
     if action == "go" and "text" in context.user_data:
@@ -255,12 +302,13 @@ async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: st
         return ConversationHandler.END
     data = context.user_data
     hits = data.get("risk_hits") or []
+    ids = [c["id"] for c in _selected_categories(context)]
     try:
         with db.tx():
             db.execute(
-                "INSERT INTO submissions(author, category_id, text, text_hash, risk_hits, priority, created) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (author, data.get("category_id"), data["text"], data["text_hash"], json.dumps(hits), 1 if hits else 0, now),
+                "INSERT INTO submissions(author, category_id, category_ids, text, text_hash, risk_hits, priority, created) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (author, ids[0] if ids else None, json.dumps(ids), data["text"], data["text_hash"], json.dumps(hits), 1 if hits else 0, now),
             )
             today = now // 86400
             db.execute(
@@ -275,7 +323,7 @@ async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: st
     banner = active_banner()
     if banner:
         r.nl(2).italic(banner)
-    for k in ("category_id", "text", "text_hash", "risk_hits"):
+    for k in ("category_ids", "text", "text_hash", "risk_hits"):
         context.user_data.pop(k, None)
     text, ents = r.build()
     await msg.reply_text(text, entities=ents, reply_markup=nav_keyboard(lang, update.effective_user.id))
@@ -287,7 +335,7 @@ async def escape_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     Confess restarts the flow; Cancel/others exit."""
     lang = lang_of(update)
     action = nav_action(update.message.text)
-    for k in ("category_id", "text", "text_hash", "risk_hits", "pending_offer"):
+    for k in ("category_ids", "text", "text_hash", "risk_hits", "pending_offer"):
         context.user_data.pop(k, None)
     if action == "confess":
         return await _ask_category(update.message, lang)

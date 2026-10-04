@@ -182,6 +182,7 @@ async def test_sql_and_markup_injection_is_stored_and_rendered_literally(h):
 async def test_unicode_evasion_of_filters(h):
     await h.say(STUDENT, "✍️ Confess")
     await h.press(STUDENT, "Rant")
+    await h.press(STUDENT, "Done")
     for evasive in (
         "call me on 09\u200b11\u200b22\u200b33\u200b44 tonight please ok",          # zero-width in phone
         "my handle is @\u200bsome_user_name find me there anytime",                # zero-width in mention
@@ -196,6 +197,7 @@ async def test_unicode_evasion_of_filters(h):
 async def test_oversized_inputs_rejected_not_crash(h):
     await h.say(STUDENT, "✍️ Confess")
     await h.press(STUDENT, "Rant")
+    await h.press(STUDENT, "Done")
     await h.say(STUDENT, "x" * 4096)
     assert "Too long" in h.last(STUDENT).text
     await h.say(OWNER, "/set welcome_text " + "y" * 4096)

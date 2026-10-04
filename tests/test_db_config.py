@@ -5,7 +5,7 @@ import db
 def test_migrations_applied_once():
     assert db.migrate() == []
     names = [r["name"] for r in db.q("SELECT name FROM schema_migrations ORDER BY name")]
-    assert names == ["0001_init.sql", "0002_seed.sql", "0003_connect.sql", "0004_review_stages.sql", "0005_single_stage.sql", "0006_abuse_limits.sql", "0007_text_format.sql", "0008_connect_mutual.sql", "0009_setup.sql"]
+    assert names == ["0001_init.sql", "0002_seed.sql", "0003_connect.sql", "0004_review_stages.sql", "0005_single_stage.sql", "0006_abuse_limits.sql", "0007_text_format.sql", "0008_connect_mutual.sql", "0009_setup.sql", "0010_contact_categories.sql"]
 
 
 def test_seed_present():

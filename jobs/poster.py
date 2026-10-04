@@ -12,7 +12,7 @@ from telegram.error import RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
 import db
-from common import alert_admins, bot_link, category, kb, live_buttons, notify_author, post_link, staff_name, user_lang
+from common import alert_admins, bot_link, hashtags_of, kb, live_buttons, notify_author, post_link, staff_name, user_lang
 from config import cfg
 from i18n import t
 
@@ -56,17 +56,17 @@ def due(now: int) -> bool:
 # Formatting
 # ---------------------------------------------------------------------------
 
-def format_confession(number: int, text: str, hashtag: str, cat_label: str = "") -> tuple[str, list[MessageEntity]]:
-    """Bold header (with the category's emoji), literal body, hashtag. Long posts fold into an
-    expandable quote so the channel stays scannable."""
-    emoji = cat_label.split(" ")[0] if cat_label and not cat_label[0].isalnum() else ""
-    header = f"{emoji + ' ' if emoji else ''}Confession #{number}"
-    r = Rich().bold(header).nl(2)
+def format_confession(number: int, text: str, hashtags: str = "") -> tuple[str, list[MessageEntity]]:
+    """Bold header, literal body, hashtags on their own line (omitted when none).
+    Long posts fold into an expandable quote so the channel stays scannable."""
+    r = Rich().bold(f"Confession #{number}").nl(2)
     if len(text) > 700:
         r.quote(text, expandable=True)
     else:
         r.text(text)
-    return r.nl(2).text(hashtag).build()
+    if hashtags:
+        r.nl(2).text(hashtags)
+    return r.build()
 
 
 def format_ad(text: str, bot_username: str = "") -> tuple[str, list[MessageEntity]]:
@@ -126,8 +126,7 @@ def _reserve_number() -> int:
 async def _post_confession(context, item: dict, now: int) -> None:
     env = context.bot_data["env"]
     number = _reserve_number()
-    cat = category(item["category_id"])
-    text, entities = format_confession(number, item["text"], cat["hashtag"], cat["label"])
+    text, entities = format_confession(number, item["text"], hashtags_of(item))
     msg = await context.bot.send_message(
         env.channel_id, text, entities=entities, reply_markup=comments_button(context, number, 0),
         disable_web_page_preview=True,
@@ -135,9 +134,10 @@ async def _post_confession(context, item: dict, now: int) -> None:
     hits = json.loads(item.get("risk_hits") or "[]")
     with db.tx():
         db.execute(
-            "INSERT INTO posts(number, kind, channel_msg_id, author, category_id, posted_at, approved_by, risk_hits) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (number, item["kind"], msg.message_id, item["author"], item["category_id"], now, item.get("approved_by"), json.dumps(hits)),
+            "INSERT INTO posts(number, kind, channel_msg_id, author, category_id, category_ids, posted_at, approved_by, risk_hits) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (number, item["kind"], msg.message_id, item["author"], item["category_id"], item.get("category_ids") or "[]", now,
+             item.get("approved_by"), json.dumps(hits)),
         )
         db.execute("DELETE FROM outbox WHERE id=?", (item["id"],))
         _set_meta("last_post_at", now)

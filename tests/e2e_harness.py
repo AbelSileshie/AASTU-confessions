@@ -146,6 +146,7 @@ class Harness:
     async def submit_confession(self, uid: int, text: str, category_label: str = "Campus") -> None:
         await self.say(uid, "✍️ Confess")
         await self.press(uid, category_label)
+        await self.press(uid, "Done")
         await self.say(uid, text)
         await self.press(uid, "Submit")
 

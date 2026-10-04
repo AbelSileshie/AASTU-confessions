@@ -75,7 +75,7 @@ them the invite link. Add receiving accounts with `/payout_accounts add telebirr
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q            # 229 tests, ~25 s
+.venv/bin/python -m pytest -q            # 234 tests, ~30 s
 .venv/bin/bandit -q -r . -x ./.venv,./tests
 .venv/bin/pip-audit
 ```
@@ -125,7 +125,7 @@ setup` shows the state and can force it).
 
 ## Student extras
 
-Students only ever see their own confessions (`📝 My confessions`); there is no public listing inside the bot.
+Confessions can carry 0–3 categories (hashtags on the post). Students only ever see their own confessions (`📝 My confessions`); there is no public listing inside the bot.
 Live notifications carry `📣 Open in channel` and `💬 Comments` buttons (plus `➕ Join the channel` when the channel is
 private). `📝 My confessions` shows the status of recent submissions (pending / live #N / not approved /
 deleted) with Delete and Thread buttons. Authors get one grouped DM for new comments at most every

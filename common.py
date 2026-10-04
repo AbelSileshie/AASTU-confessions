@@ -567,9 +567,28 @@ def advertiser_name(advertiser_id: int | None) -> str:
     return (row["name"][:32] if row and row["name"] else f"Advertiser #{advertiser_id or '?'}")
 
 
-def category(cat_id: int | None) -> dict:
-    row = db.one("SELECT * FROM categories WHERE id=?", (cat_id,)) if cat_id else None
-    return dict(row) if row else {"id": None, "label": "Other", "hashtag": "#Other", "slug": "other"}
+def categories_of(item: dict) -> list[dict]:
+    """Ordered categories for a submission/outbox/post row (JSON `category_ids`, legacy `category_id`)."""
+    try:
+        ids = [int(x) for x in json.loads(item.get("category_ids") or "[]")]
+    except (ValueError, TypeError):
+        ids = []
+    if not ids and item.get("category_id"):
+        ids = [item["category_id"]]
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    rows = db.q(f"SELECT * FROM categories WHERE id IN ({marks}) ORDER BY sort, id", ids)  # nosec B608 - placeholders
+    return [dict(r) for r in rows]
+
+
+def category_labels(item: dict) -> str:
+    cats = categories_of(item)
+    return " · ".join(c["label"] for c in cats) if cats else "No category"
+
+
+def hashtags_of(item: dict) -> str:
+    return " ".join(c["hashtag"] for c in categories_of(item))
 
 
 def active_banner() -> str | None:

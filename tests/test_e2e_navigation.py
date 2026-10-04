@@ -76,6 +76,7 @@ async def test_amharic_labels_route_too(h):
 async def test_every_prompt_in_submit_flow_has_exits(h):
     await h.say(S, "✍️ Confess")
     await h.press(S, "Rant")
+    await h.press(S, "Done")
     prompt = h.last(S)
     assert prompt.button("Back") and prompt.button("Cancel")
     await h.say(S, "short")
@@ -83,10 +84,11 @@ async def test_every_prompt_in_submit_flow_has_exits(h):
     assert "Too short" in err.text and err.button("Cancel")
     await h.say(S, CONFESSION)
     preview = h.last(S)
-    assert preview.button("Submit") and preview.button("Edit") and preview.button("Cancel") and preview.button("Change category")
-    await h.press(S, "Change category")  # from preview
+    assert preview.button("Submit") and preview.button("Edit") and preview.button("Cancel") and preview.button("Categories")
+    await h.press(S, "Categories (")  # from preview
     assert h.last(S).button("Funny")
     await h.press(S, "Funny")
+    await h.press(S, "Done")
     assert "Preview" in h.last(S).text and "#Funny" in h.last(S).text  # text kept, category changed
     await h.press(S, "Submit")
     assert "Received" in h.last(S).text and "✍️ Confess" in h.last(S).reply_labels()
@@ -96,6 +98,7 @@ async def test_every_prompt_in_submit_flow_has_exits(h):
 async def test_inline_cancel_leaves_flow_and_shows_keyboard(h):
     await h.say(S, "✍️ Confess")
     await h.press(S, "Rant")
+    await h.press(S, "Done")
     await h.press(S, "Cancel")
     assert "cancelled" in h.last(S).text.lower() and h.last(S).reply_labels()
     # conversation really ended: free text now hits the fallback, not the flow
@@ -107,6 +110,7 @@ async def test_inline_cancel_leaves_flow_and_shows_keyboard(h):
 async def test_bottom_label_mid_flow_escapes_cleanly(h):
     await h.say(S, "✍️ Confess")
     await h.press(S, "Campus")
+    await h.press(S, "Done")
     await h.say(S, "📜 Rules")  # must not be treated as a confession
     assert "Rules" in h.last(S).text
     assert db.scalar("SELECT count(*) FROM submissions") == 0
@@ -119,6 +123,7 @@ async def test_free_text_offer_to_confess(h):
     assert h.last(S).button("Yes, confess this")
     await h.press(S, "Yes, confess this")
     await h.press(S, "Crush")
+    await h.press(S, "Done")
     preview = h.last(S)
     assert "Preview" in preview.text and CONFESSION in preview.text and "#Crush" in preview.text
     await h.press(S, "Submit")
@@ -235,6 +240,7 @@ async def test_full_student_journey_has_no_dead_ends(h):
     await h.say(S2, "nice one")
     await h.say(S2, "✍️ Confess")
     await h.press(S2, "Advice")
+    await h.press(S2, "Done")
     await h.say(S2, "Should I tell my roommate that I can hear everything through the wall?")
     await h.press(S2, "Submit")
     await h.say(S2, "📜 Rules")

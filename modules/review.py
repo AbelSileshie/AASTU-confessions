@@ -14,7 +14,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import alert_admins, category, pending_clear, pending_get, pending_set, staff_reply, fmt_ts, is_private_chat, kb, notify_author, reasons_kb, staff_name, user_lang
+from common import alert_admins, category_labels, pending_clear, pending_get, pending_set, staff_reply, fmt_ts, is_private_chat, kb, notify_author, reasons_kb, staff_name, user_lang
 from config import cfg
 from i18n import t
 from security import has_role, require, verify_cb
@@ -53,9 +53,9 @@ def approve(sub: dict, moderator_id: int) -> int:
     now = db.now()
     with db.tx():
         out_id = db.execute(
-            "INSERT INTO outbox(kind, author, category_id, text, approved_by, approved_at, stage, risk_hits) "
-            "VALUES ('confession',?,?,?,?,?,'ready',?)",
-            (sub["author"], sub["category_id"], sub["text"], moderator_id, now, hits),
+            "INSERT INTO outbox(kind, author, category_id, category_ids, text, approved_by, approved_at, stage, risk_hits) "
+            "VALUES ('confession',?,?,?,?,?,?,'ready',?)",
+            (sub["author"], sub["category_id"], sub.get("category_ids") or "[]", sub["text"], moderator_id, now, hits),
         )
         db.execute("DELETE FROM submissions WHERE id=?", (sub["id"],))
     db.audit(moderator_id, "approve", f"sub:{sub['id']}", f"outbox:{out_id}")
@@ -67,8 +67,8 @@ def decline(item: dict, actor: int, reason: str, source: str) -> int:
     now = db.now()
     with db.tx():
         did = db.execute(
-            "INSERT INTO declined(author, category_id, text, text_hash, risk_hits, reason, declined_by, created) VALUES (?,?,?,?,?,?,?,?)",
-            (item["author"], item["category_id"], item["text"], item.get("text_hash"), item.get("risk_hits") or "[]",
+            "INSERT INTO declined(author, category_id, category_ids, text, text_hash, risk_hits, reason, declined_by, created) VALUES (?,?,?,?,?,?,?,?,?)",
+            (item["author"], item["category_id"], item.get("category_ids") or "[]", item["text"], item.get("text_hash"), item.get("risk_hits") or "[]",
              reason, actor, now),
         )
         db.execute("DELETE FROM submissions WHERE id=?" if source == "sub" else "DELETE FROM outbox WHERE id=?", (item["id"],))
@@ -82,8 +82,8 @@ def restore(declined_id: int, actor: int) -> bool:
         return False
     with db.tx():
         db.execute(
-            "INSERT OR IGNORE INTO submissions(author, category_id, text, text_hash, risk_hits, priority, created) VALUES (?,?,?,?,?,?,?)",
-            (row["author"], row["category_id"], row["text"], row["text_hash"], row["risk_hits"],
+            "INSERT OR IGNORE INTO submissions(author, category_id, category_ids, text, text_hash, risk_hits, priority, created) VALUES (?,?,?,?,?,?,?,?)",
+            (row["author"], row["category_id"], row["category_ids"] or "[]", row["text"], row["text_hash"], row["risk_hits"],
              1 if json.loads(row["risk_hits"] or "[]") else 0, db.now()),
         )
         db.execute("DELETE FROM declined WHERE id=?", (declined_id,))
@@ -118,11 +118,10 @@ def _queue_size() -> int:
 def render_card(sub: dict, queue_size: int):
     """(text, entities) for the moderator DM card."""
     hits = json.loads(sub.get("risk_hits") or "[]")
-    cat = category(sub.get("category_id"))
     meta = [("Strikes", str(_strikes(sub["author"]))), ("Queue", str(queue_size))]
     if hits:
         meta.append(("Flags", ", ".join(hits)))
-    return card(f"📋 Submission #{sub['id']} · {cat['label']}{' · ⚠️ FLAGGED' if hits else ''}", meta,
+    return card(f"📋 Submission #{sub['id']} · {category_labels(sub)}{' · ⚠️ FLAGGED' if hits else ''}", meta,
                 highlight(sub["text"], hits), hint="Check: names a person? threat/blackmail? sexual about a real person? → Reject").build()
 
 
@@ -145,8 +144,7 @@ def ban_kb(sub_id: int):
 
 
 def render_declined_card(row: dict):
-    cat = category(row["category_id"])
-    return card(f"❌ Declined · {cat['label']}", [("Reason", t("en", "reject." + (row["reason"] or "other"))),
+    return card(f"❌ Declined · {category_labels(row)}", [("Reason", t("en", "reject." + (row["reason"] or "other"))),
                                                    ("By", staff_name(row["declined_by"]))], row["text"]).build()
 
 

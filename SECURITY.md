@@ -43,8 +43,9 @@ One-way: only the confession author (OP) can ever receive a contact; the comment
 Two-step: commenter accepts → OP must explicitly tap **Show contact**; until then the commenter can revoke and
 nothing is revealed. After reveal the commenter can still revoke for `connect_revoke_hours` (the OP is told not to
 contact them). OP can withdraw a pending request or decline an accepted one. Every transition is an atomic,
-ownership-checked `UPDATE … WHERE status IN (…) RETURNING`, so replays and races cannot double-reveal. The only place a
-raw id travels is inside the `text_mention` entity sent to the OP; nothing is persisted.
+ownership-checked `UPDATE … WHERE status IN (…) RETURNING`, so replays and races cannot double-reveal. At reveal the bot calls `get_chat` on the commenter (they started the bot) and shows name + `@username` (resolves by
+username, privacy-proof), falling back to a `text_mention`/`tg://user` profile button; nothing extra is persisted. Every
+step that needs an action is a new message; earlier cards only lose their buttons.
 
 ## Chat assignment (setup)
 

@@ -1,7 +1,7 @@
 """Anonymous comment threads + consent-based Connect (OP ↔ commenter)."""
 from __future__ import annotations
 
-from telegram import MessageEntity, Update, User
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, Update, User
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 import db
-from common import alert_admins, dispatch_nav, ensure_user, exit_row, is_banned, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
+from common import alert_admins, dispatch_nav, ensure_user, exit_row, is_banned, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, parse_int, send_home, user_lang
 from config import cfg
 from fmt import Rich, card
 from i18n import t
@@ -53,9 +53,12 @@ def _thread_rows(number: int, before_id: int | None) -> list[dict]:
     return [dict(r) for r in reversed(rows)]
 
 
-def render_thread(number: int, rows: list[dict], lang: str, viewer_is_op: bool, viewer_has_connects: bool = False) -> tuple[str, list]:
+def render_thread(number: int, rows: list[dict], lang: str, viewer_is_op: bool, viewer_has_connects: bool = False,
+                  note: str | None = None) -> tuple[str, list]:
     count = db.scalar("SELECT count(*) FROM comments WHERE number=? AND hidden=0", (number,), 0)
     rich = Rich().bold(t(lang, "comments.title", number=number, count=count))
+    if note:
+        rich.nl().italic(note)
     if not rows:
         rich.nl(2).italic(t(lang, "comments.empty"))
     alias_of = {r["id"]: r["alias"] for r in rows}
@@ -69,10 +72,9 @@ def render_thread(number: int, rows: list[dict], lang: str, viewer_is_op: bool, 
     per_comment = []
     for r in rows[-5:]:
         who = r["alias"][:14]
-        row = [(t(lang, "comments.btn_reply", who=who), "cm", f"w:{number}:{r['id']}"), (t(lang, "comments.btn_report", who=who), "cm", f"rep:{r['id']}")]
+        per_comment.append([(t(lang, "comments.btn_reply", who=who), "cm", f"w:{number}:{r['id']}"), (t(lang, "comments.btn_report", who=who), "cm", f"rep:{r['id']}")])
         if viewer_is_op and r["alias"] != "OP" and cfg("connect_enabled", True):
-            row.append((t(lang, "connect.btn_ask", who=who), "cn", f"ask:{r['id']}"))
-        per_comment.append(row)
+            per_comment.append([(t(lang, "connect.btn_ask", who=who), "cn", f"ask:{r['id']}")])
     nav = []
     if viewer_has_connects:
         nav.append((t(lang, "connect.btn_list"), "cn", "list"))
@@ -82,7 +84,7 @@ def render_thread(number: int, rows: list[dict], lang: str, viewer_is_op: bool, 
     return rich.build(), buttons + per_comment + [nav]
 
 
-async def _show_thread(message, update: Update, number: int, before_id: int | None = None) -> None:
+async def _show_thread(message, update: Update, number: int, before_id: int | None = None, note: str | None = None) -> None:
     lang = lang_of(update)
     post = db.one("SELECT author, deleted FROM posts WHERE number=? AND kind='confession'", (number,))
     if not post or post["deleted"]:
@@ -90,7 +92,7 @@ async def _show_thread(message, update: Update, number: int, before_id: int | No
         return
     viewer = author_hash(update.effective_user.id)
     has_connects = bool(connect_items(viewer))
-    (text, ents), rows = render_thread(number, _thread_rows(number, before_id), lang, viewer == post["author"], has_connects)
+    (text, ents), rows = render_thread(number, _thread_rows(number, before_id), lang, viewer == post["author"], has_connects, note)
     await message.reply_text(text, entities=ents, reply_markup=kb(rows))
 
 
@@ -182,8 +184,7 @@ async def write_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         db.execute("UPDATE users SET last_comment=? WHERE author=?", (now, author))
     context.user_data.pop("cm_number", None)
     context.user_data.pop("cm_reply", None)
-    await update.message.reply_text(t(lang, "comments.posted", alias=alias))
-    await _show_thread(update.message, update, number)
+    await _show_thread(update.message, update, number, note=t(lang, "comments.posted", alias=alias))
     return ConversationHandler.END
 
 
@@ -275,13 +276,14 @@ async def comment_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------------------------------------------------------------------------
 # Connect — the vent owner (OP) asks a commenter to share their contact.
 #
-# Direction is ONE-WAY: only the OP ever receives a contact. Both sides can
-# change their mind at every step:
+# ONE-WAY: only the OP ever receives a contact. Both sides can change their mind:
 #   pending  → commenter: accept / decline        OP: withdraw
 #   accepted → OP: show contact / not interested  commenter: revoke (prevents the reveal)
 #   revealed → commenter: revoke within connect_revoke_hours (OP is told not to contact them)
+# Every step that needs an action is a NEW message with buttons; old messages only lose theirs.
 # ---------------------------------------------------------------------------
 
+MSG_COLS = ("op_msg_id", "op_offer_msg_id", "target_msg_id", "target_accept_msg_id", "target_reveal_msg_id")
 
 
 def _transition(rid: int, who_col: str, who: str, from_status: tuple[str, ...], to: str, now: int) -> dict | None:
@@ -296,29 +298,48 @@ def _transition(rid: int, who_col: str, who: str, from_status: tuple[str, ...], 
     return dict(row) if row else None
 
 
-async def _send_mention(bot, chat_id: int, prefix: str, target_user_id: int, **kw) -> None:
-    label = "👤 Open profile"
-    text, ents = Rich().text(prefix).text("\n\n").styled(label, MessageEntity.TEXT_MENTION,
-                                                           user=User(id=target_user_id, first_name=label, is_bot=False)).build()
-    await bot.send_message(chat_id, text, entities=ents, **kw)
-
-
-async def _close(bot, chat_id: int | None, msg_id: int | None, suffix: str) -> None:
-    """Remove buttons on an earlier DM and append the outcome."""
-    if not chat_id or not msg_id:
-        return
-    try:
-        await bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=None)
-    except TelegramError:
-        pass
-    try:
-        await bot.send_message(chat_id, suffix)
-    except TelegramError:
-        pass
-
-
 def _chat(author: str) -> int | None:
     return decrypt_ref(db.scalar("SELECT chat_ref FROM users WHERE author=?", (author,)))
+
+
+def _alias(row: dict) -> str:
+    return db.scalar("SELECT alias FROM comments WHERE id=?", (row["comment_id"],), "Anon") or "Anon"
+
+
+async def _strip(bot, chat_id: int | None, *msg_ids) -> None:
+    """Remove buttons from earlier cards (never the only place an action lives)."""
+    for mid in msg_ids:
+        if chat_id and mid:
+            try:
+                await bot.edit_message_reply_markup(chat_id, mid, reply_markup=None)
+            except TelegramError:
+                pass
+
+
+async def _strip_all(bot, row: dict) -> None:
+    await _strip(bot, _chat(row["requester"]), row.get("op_msg_id"), row.get("op_offer_msg_id"))
+    await _strip(bot, _chat(row["target"]), row.get("target_msg_id"), row.get("target_accept_msg_id"), row.get("target_reveal_msg_id"))
+
+
+async def _say(bot, chat_id: int | None, lang: str, key: str, buttons=None, **kw):
+    """Bold first line + plain rest; returns the Message or None."""
+    if not chat_id:
+        return None
+    first, _, rest = t(lang, key, **kw).partition("\n")
+    r = Rich().bold(first)
+    if rest:
+        r.nl().text(rest)
+    text, ents = r.build()
+    try:
+        return await bot.send_message(chat_id, text, entities=ents, reply_markup=kb(buttons) if buttons else None,
+                                      disable_web_page_preview=True)
+    except TelegramError:
+        return None
+
+
+def _set_msg(rid: int, col: str, msg) -> None:
+    if msg and col in MSG_COLS:
+        db.execute(f"UPDATE connect_requests SET {col}=? WHERE id=?", (msg.message_id, rid))  # nosec B608 - whitelisted column
 
 
 def create_connect(number: int, comment_id: int, requester: str, now: int) -> tuple[str, dict]:
@@ -357,40 +378,57 @@ async def connect_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lang = lang_of(update)
     me = ensure_user(update.effective_user.id)
     now = db.now()
-
+    bot = context.bot
     if action == "ask":
         await _ask(q, context, me, arg, lang)
         return
     if action == "list":
+        await q.answer()
         await _list(q.message, me, lang)
         return
     rid = int(arg) if arg.isdigit() else -1
+
     if action == "yes":
         await _commenter_accept(q, context, rid, me, lang, now)
     elif action == "no":
         row = _transition(rid, "target", me, ("pending",), "declined", now)
-        await q.answer(t(lang, "connect.declined_target") if row else t(lang, "connect.gone"), show_alert=not row)
-        if row:
-            await _close(context.bot, update.effective_user.id, q.message.message_id, t(lang, "connect.declined_target"))
-            await _tell_op(context, row, "connect.op_declined", close_op=True)
+        if not await _ok(q, row, lang):
+            return
+        await _strip_all(bot, row)
+        await _say(bot, q.message.chat_id, lang, "connect.declined_target", number=row["number"])
+        await _say(bot, _chat(row["requester"]), user_lang(row["requester"]), "connect.op_declined", alias=_alias(row), number=row["number"])
     elif action == "revoke":
         await _commenter_revoke(q, context, rid, me, lang, now)
     elif action == "withdraw":
         row = _transition(rid, "requester", me, ("pending",), "withdrawn", now)
-        await q.answer(t(lang, "connect.withdrawn") if row else t(lang, "connect.gone"), show_alert=not row)
-        if row:
-            await _close(context.bot, update.effective_user.id, q.message.message_id, t(lang, "connect.withdrawn"))
-            await _close(context.bot, _chat(row["target"]), row["target_msg_id"], t(user_lang(row["target"]), "connect.target_withdrawn", number=row["number"]))
+        if not await _ok(q, row, lang):
+            return
+        await _strip_all(bot, row)
+        await _say(bot, q.message.chat_id, lang, "connect.withdrawn", number=row["number"])
+        await _say(bot, _chat(row["target"]), user_lang(row["target"]), "connect.target_withdrawn", number=row["number"])
     elif action == "show":
         await _op_show(q, context, rid, me, lang, now)
     elif action == "refuse":
         row = _transition(rid, "requester", me, ("accepted",), "refused", now)
-        await q.answer(t(lang, "connect.refused") if row else t(lang, "connect.gone"), show_alert=not row)
-        if row:
-            await _close(context.bot, update.effective_user.id, q.message.message_id, t(lang, "connect.refused"))
-            await _close(context.bot, _chat(row["target"]), row["target_msg_id"], t(user_lang(row["target"]), "connect.target_refused", number=row["number"]))
+        if not await _ok(q, row, lang):
+            return
+        await _strip_all(bot, row)
+        await _say(bot, q.message.chat_id, lang, "connect.refused", number=row["number"])
+        await _say(bot, _chat(row["target"]), user_lang(row["target"]), "connect.target_refused", number=row["number"])
     else:
         await q.answer()
+
+
+async def _ok(q, row, lang: str) -> bool:
+    if row:
+        await q.answer()
+        return True
+    await q.answer(t(lang, "connect.gone"), show_alert=True)
+    try:
+        await q.message.edit_reply_markup(reply_markup=None)
+    except TelegramError:
+        pass
+    return False
 
 
 async def _ask(q, context, me: str, arg: str, lang: str) -> None:
@@ -403,109 +441,125 @@ async def _ask(q, context, me: str, arg: str, lang: str) -> None:
         await q.answer(t(lang, key, **info), show_alert=True)
         return
     await q.answer()
-    rid = info["id"]
+    rid, number = info["id"], c["number"]
     tl = user_lang(info["target"])
-    target_chat = _chat(info["target"])
+    target_chat = _chat(info["target"]) if cfg("notify_authors", True) else None
     sent = None
-    if target_chat and cfg("notify_authors", True):
+    if target_chat:
+        text, ents = (Rich().bold(t(tl, "connect.ask_title", number=number)).nl().text(t(tl, "connect.ask_body")).nl(2)
+                      .quote(info["comment"][:200]).nl(2).italic(t(tl, "connect.ask_terms")).build())
         try:
-            sent = await context.bot.send_message(
-                target_chat, t(tl, "connect.ask", number=c["number"], comment=info["comment"][:200]),
-                reply_markup=kb([[(t(tl, "connect.btn_accept"), "cn", f"yes:{rid}"), (t(tl, "connect.btn_decline"), "cn", f"no:{rid}")]]))
+            sent = await context.bot.send_message(target_chat, text, entities=ents,
+                                                  reply_markup=kb([[(t(tl, "connect.btn_accept"), "cn", f"yes:{rid}"), (t(tl, "connect.btn_decline"), "cn", f"no:{rid}")]]))
         except TelegramError:
             sent = None
     if not sent:
         db.execute("UPDATE connect_requests SET status='expired', resolved=? WHERE id=?", (db.now(), rid))
-        await q.message.reply_text(t(lang, "connect.unreachable"))
+        await q.message.reply_text(t(lang, "connect.unreachable"), reply_markup=kb([[(t(lang, "menu.back"), "cm", f"pg:{number}:0")]]))
         return
-    op_msg = await q.message.reply_text(t(lang, "connect.sent", alias=info["alias"]),
-                                        reply_markup=kb([[(t(lang, "connect.btn_withdraw"), "cn", f"withdraw:{rid}")]]))
-    db.execute("UPDATE connect_requests SET target_msg_id=?, op_msg_id=? WHERE id=?", (sent.message_id, op_msg.message_id, rid))
-
-
-async def _tell_op(context, row: dict, key: str, close_op: bool = False, **kw) -> None:
-    alias = db.scalar("SELECT alias FROM comments WHERE id=?", (row["comment_id"],), "Anon")
-    rl = user_lang(row["requester"])
-    text = t(rl, key, alias=alias, number=row["number"], **kw)
-    if close_op:
-        await _close(context.bot, _chat(row["requester"]), row["op_msg_id"], text)
-    else:
-        await notify_author(context, row["requester"], text)
+    _set_msg(rid, "target_msg_id", sent)
+    op_msg = await _say(context.bot, q.message.chat_id, lang, "connect.sent", alias=info["alias"], number=number,
+                        buttons=[[(t(lang, "connect.btn_withdraw"), "cn", f"withdraw:{rid}")]])
+    _set_msg(rid, "op_msg_id", op_msg)
 
 
 async def _commenter_accept(q, context, rid: int, me: str, lang: str, now: int) -> None:
     row = _transition(rid, "target", me, ("pending",), "accepted", now)
-    if not row:
-        await q.answer(t(lang, "connect.gone"), show_alert=True)
+    if not await _ok(q, row, lang):
         return
-    await q.answer()
+    bot = context.bot
     hours = cfg("connect_revoke_hours", 72)
-    try:
-        await q.message.edit_reply_markup(reply_markup=kb([[(t(lang, "connect.btn_revoke"), "cn", f"revoke:{rid}")]]))
-    except TelegramError:
-        pass
-    await q.message.reply_text(t(lang, "connect.accepted_target", number=row["number"], hours=hours))
-    # OP: second explicit step before anything is revealed
-    alias = db.scalar("SELECT alias FROM comments WHERE id=?", (row["comment_id"],), "Anon")
+    await _strip(bot, q.message.chat_id, row.get("target_msg_id"))
+    msg = await _say(bot, q.message.chat_id, lang, "connect.accepted_target", number=row["number"], hours=hours,
+                     buttons=[[(t(lang, "connect.btn_revoke"), "cn", f"revoke:{rid}")]])
+    _set_msg(rid, "target_accept_msg_id", msg)
+    # OP: ONE message with the two choices
     rl = user_lang(row["requester"])
     op_chat = _chat(row["requester"])
-    await _close(context.bot, op_chat, row["op_msg_id"], t(rl, "connect.op_accepted_note", alias=alias))
-    if op_chat:
-        try:
-            await context.bot.send_message(op_chat, t(rl, "connect.op_accepted", alias=alias, number=row["number"]),
-                                           reply_markup=kb([[(t(rl, "connect.btn_show"), "cn", f"show:{rid}"), (t(rl, "connect.btn_refuse"), "cn", f"refuse:{rid}")]]))
-        except TelegramError:
-            pass
+    await _strip(bot, op_chat, row.get("op_msg_id"))
+    offer = await _say(bot, op_chat, rl, "connect.op_accepted", alias=_alias(row), number=row["number"],
+                       buttons=[[(t(rl, "connect.btn_show"), "cn", f"show:{rid}"), (t(rl, "connect.btn_refuse"), "cn", f"refuse:{rid}")]])
+    _set_msg(rid, "op_offer_msg_id", offer)
 
 
 async def _op_show(q, context, rid: int, me: str, lang: str, now: int) -> None:
-    row = _transition(rid, "requester", me, ("accepted",), "revealed", now)
-    if not row:
-        await q.answer(t(lang, "connect.gone"), show_alert=True)
+    cur = db.one("SELECT * FROM connect_requests WHERE id=? AND requester=? AND status='accepted'", (rid, me))
+    if not cur:
+        await _ok(q, None, lang)
+        return
+    target_id = _chat(cur["target"])
+    chat = None
+    if target_id is not None:
         try:
-            await q.message.edit_reply_markup(reply_markup=None)
+            chat = await context.bot.get_chat(target_id)
         except TelegramError:
-            pass
+            chat = None
+    if target_id is None or chat is None:
+        await q.answer(t(lang, "connect.lookup_failed"), show_alert=True)  # stays 'accepted' — nothing was revealed
+        return
+    row = _transition(rid, "requester", me, ("accepted",), "revealed", now)
+    if not await _ok(q, row, lang):
         return
     db.execute("UPDATE connect_requests SET revealed_at=? WHERE id=?", (now, rid))
-    await q.answer()
+    await _strip(context.bot, q.message.chat_id, row.get("op_offer_msg_id"))
+    await _send_contact(context.bot, q.message.chat_id, lang, row, chat, target_id)
+    tl = user_lang(row["target"])
+    msg = await _say(context.bot, target_id, tl, "connect.target_revealed", number=row["number"], hours=cfg("connect_revoke_hours", 72),
+                     buttons=[[(t(tl, "connect.btn_revoke"), "cn", f"revoke:{rid}")]])
+    _set_msg(rid, "target_reveal_msg_id", msg)
+
+
+async def _send_contact(bot, chat_id: int, lang: str, row: dict, chat, target_id: int) -> None:
+    """The actual contact card: name + @username (resolves by username, privacy-proof) + profile button fallback."""
+    name = " ".join(x for x in (chat.first_name, chat.last_name) if x) or "—"
+    username = chat.username
+    r = Rich().bold(t(lang, "connect.revealed_title", alias=_alias(row), number=row["number"])).nl()
+    r.label(t(lang, "connect.lbl_name"), name).nl()
+    if username:
+        r.bold(t(lang, "connect.lbl_telegram") + ":").text(" ").styled(f"@{username}", MessageEntity.MENTION)
+    else:
+        r.bold(t(lang, "connect.lbl_telegram") + ":").text(" ").styled(name, MessageEntity.TEXT_MENTION,
+                                                                      user=User(id=target_id, first_name=chat.first_name or name, last_name=chat.last_name, is_bot=False))
+        r.nl().italic(t(lang, "connect.no_username"))
+    if getattr(chat, "has_private_forwards", False) and not username:
+        r.nl().italic(t(lang, "connect.privacy_note"))
+    r.nl(2).italic(t(lang, "connect.revealed_terms", hours=cfg("connect_revoke_hours", 72)))
+    text, ents = r.build()
+    buttons = []
+    if username:
+        buttons.append([(t(lang, "connect.btn_open_user", username=username), f"https://t.me/{username}")])
+    else:
+        buttons.append([InlineKeyboardButton(t(lang, "connect.btn_open_profile"), url=f"tg://user?id={target_id}")])
+    buttons.append([(t(lang, "connect.btn_back_thread"), "cm", f"pg:{row['number']}:0")])
+    markup = kb([b for b in buttons if not isinstance(b[0], InlineKeyboardButton)])
+    if not username:  # kb() only builds https/callback buttons; add the tg:// profile button manually
+        rows = [[InlineKeyboardButton(t(lang, "connect.btn_open_profile"), url=f"tg://user?id={target_id}")]] + list(markup.inline_keyboard)
+        markup = InlineKeyboardMarkup(rows)
     try:
-        await q.message.edit_reply_markup(reply_markup=None)
+        await bot.send_message(chat_id, text, entities=ents, reply_markup=markup, disable_web_page_preview=True)
     except TelegramError:
         pass
-    target_id = _chat(row["target"])
-    alias = db.scalar("SELECT alias FROM comments WHERE id=?", (row["comment_id"],), "Anon")
-    if target_id is None:
-        await q.message.reply_text(t(lang, "connect.gone"))
-        return
-    await _send_mention(context.bot, q.message.chat_id, t(lang, "connect.revealed", alias=alias, number=row["number"]), target_id)
-    await notify_author(context, row["target"], t(user_lang(row["target"]), "connect.target_revealed", number=row["number"],
-                                                   hours=cfg("connect_revoke_hours", 72)))
 
 
 async def _commenter_revoke(q, context, rid: int, me: str, lang: str, now: int) -> None:
     cur = db.one("SELECT * FROM connect_requests WHERE id=? AND target=?", (rid, me))
     if cur and cur["status"] == "revealed" and now - (cur["revealed_at"] or 0) > cfg("connect_revoke_hours", 72) * 3600:
         await q.answer(t(lang, "connect.revoke_late"), show_alert=True)
-        try:
-            await q.message.edit_reply_markup(reply_markup=None)
-        except TelegramError:
-            pass
+        await _strip(context.bot, q.message.chat_id, q.message.message_id)
         return
     row = _transition(rid, "target", me, ("accepted", "revealed"), "revoked", now)
-    if not row:
-        await q.answer(t(lang, "connect.gone"), show_alert=True)
+    if not await _ok(q, row, lang):
         return
-    await q.answer()
-    await _close(context.bot, q.message.chat_id, q.message.message_id, t(lang, "connect.revoked_target"))
+    await _strip_all(context.bot, row)
+    await _say(context.bot, q.message.chat_id, lang, "connect.revoked_target", number=row["number"])
     key = "connect.op_revoked_after" if cur and cur["status"] == "revealed" else "connect.op_revoked_before"
-    await _tell_op(context, row, key)
+    await _say(context.bot, _chat(row["requester"]), user_lang(row["requester"]), key, alias=_alias(row), number=row["number"])
 
 
-# ---- 🤝 Requests list (both roles) -------------------------------------------------
+# ---- 📇 Contact requests list (both roles) ------------------------------------------
 
 def connect_items(author: str) -> list[dict]:
-    rows = db.q("SELECT r.*, c.alias FROM connect_requests r JOIN comments c ON c.id=r.comment_id "
+    rows = db.q("SELECT r.*, c.alias, c.text AS ctext FROM connect_requests r JOIN comments c ON c.id=r.comment_id "
                 "WHERE (r.requester=? OR r.target=?) AND r.status IN ('pending','accepted','revealed') ORDER BY r.id DESC LIMIT 10",
                 (author, author))
     return [dict(r) for r in rows]
@@ -513,6 +567,8 @@ def connect_items(author: str) -> list[dict]:
 
 async def _list(message, me: str, lang: str) -> None:
     items = connect_items(me)
+    now = db.now()
+    window = cfg("connect_revoke_hours", 72) * 3600
     r = Rich().bold(t(lang, "connect.list_title"))
     buttons = []
     if not items:
@@ -520,17 +576,17 @@ async def _list(message, me: str, lang: str) -> None:
     for it in items:
         as_op = it["requester"] == me
         who = it["alias"] if as_op else t(lang, "connect.the_author")
-        r.nl(2).text(f"#{it['number']} · {who} · ").italic(t(lang, f"connect.status_{it['status']}"))
+        snippet = it["ctext"].replace("\n", " ")[:40]
+        r.nl(2).bold(f"#{it['number']}").text(f" · {who} · ").italic(t(lang, f"connect.status_{it['status']}")).nl().text(f"   “{snippet}”")
+        tag = f" #{it['number']}"
         if as_op and it["status"] == "pending":
-            buttons.append([(t(lang, "connect.btn_withdraw") + f" #{it['number']}", "cn", f"withdraw:{it['id']}")])
+            buttons.append([(t(lang, "connect.btn_withdraw") + tag, "cn", f"withdraw:{it['id']}")])
         elif as_op and it["status"] == "accepted":
-            buttons.append([(t(lang, "connect.btn_show") + f" #{it['number']}", "cn", f"show:{it['id']}"),
-                            (t(lang, "connect.btn_refuse"), "cn", f"refuse:{it['id']}")])
+            buttons.append([(t(lang, "connect.btn_show") + tag, "cn", f"show:{it['id']}"), (t(lang, "connect.btn_refuse"), "cn", f"refuse:{it['id']}")])
         elif not as_op and it["status"] == "pending":
-            buttons.append([(t(lang, "connect.btn_accept") + f" #{it['number']}", "cn", f"yes:{it['id']}"),
-                            (t(lang, "connect.btn_decline"), "cn", f"no:{it['id']}")])
-        elif not as_op:
-            buttons.append([(t(lang, "connect.btn_revoke") + f" #{it['number']}", "cn", f"revoke:{it['id']}")])
+            buttons.append([(t(lang, "connect.btn_accept") + tag, "cn", f"yes:{it['id']}"), (t(lang, "connect.btn_decline"), "cn", f"no:{it['id']}")])
+        elif not as_op and (it["status"] == "accepted" or now - (it["revealed_at"] or 0) <= window):
+            buttons.append([(t(lang, "connect.btn_revoke") + tag, "cn", f"revoke:{it['id']}")])
     buttons.append([(t(lang, "menu.back"), "menu", "home")])
     text, ents = r.build()
     await message.reply_text(text, entities=ents, reply_markup=kb(buttons))

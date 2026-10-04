@@ -36,14 +36,14 @@ async def test_thread_aliases_and_replies(h):
     await h.say(A, f"/start c_{n}")
     assert "No comments yet" in h.last(A).text
     await _comment(h, A, n, "First!")
-    assert "Posted as Anon 1" in h.texts(A)[-2]
+    assert "Posted as Anon 1" in h.last(A).text
     h.set("comment_cooldown_sec", 0)
     await _comment(h, B, n, "Second here")
-    assert "Posted as Anon 2" in h.texts(B)[-2]
+    assert "Posted as Anon 2" in h.last(B).text
     await _comment(h, OP, n, "Thanks both")
-    assert "Posted as OP" in h.texts(OP)[-2]
+    assert "Posted as OP" in h.last(OP).text
     await _comment(h, A, n, "again")  # same alias in same thread
-    assert "Posted as Anon 1" in h.texts(A)[-2]
+    assert "Posted as Anon 1" in h.last(A).text
     thread = h.last(A).text
     assert "Anon 1" in thread and "Anon 2" in thread and "OP" in thread and "(4)" in thread
     assert db.scalar("SELECT comment_count FROM posts WHERE number=?", (n,)) == 4
@@ -56,7 +56,7 @@ async def test_comment_filters_and_cooldown(h):
     await h.say(A, "visit https://spam.example now")
     assert "Links" in h.last(A).text
     await h.say(A, "fine comment")
-    assert "Posted as" in h.texts(A)[-2]
+    assert "Posted as" in h.last(A).text
     await h.press(A, "Write a comment")
     await h.say(A, "too fast")
     assert "wait" in h.last(A).text.lower()
@@ -115,23 +115,39 @@ async def test_connect_is_one_way_and_two_step(h):
     op_sent = h.last(OP)
     assert "Request sent" in op_sent.text and op_sent.button("Withdraw")
     ask = h.last(A)
-    assert "would like to contact you" in ask.text and "Only they receive it" in ask.text and str(OP) not in ask.text
+    assert "Contact request" in ask.text and "Only the author receives it" in ask.text and str(OP) not in ask.text
     # commenter accepts → nothing revealed yet; OP must take the second step
     await h.press(A, "Share my contact", message=ask)
     assert db.scalar("SELECT status FROM connect_requests") == "accepted"
     assert _mentions(h, OP) == [] and _mentions(h, A) == []
-    assert h.last(A).text.startswith("✅ You agreed") and ask.button("Revoke")
+    accepted = h.last(A)
+    assert accepted.text.startswith("✅ You agreed to share") and accepted.button("Revoke")  # NEW message carries the action
+    assert ask.buttons() == []  # old consent card lost its buttons
     offer = h.last(OP)
-    assert "agreed to share" in offer.text and offer.button("Show contact") and offer.button("Not interested")
+    assert "agreed" in offer.text and offer.button("Show contact") and offer.button("Not interested")
+    assert sum("agreed" in c.text for c in h.tg.sent_to(OP)) == 1  # one message, not three
     await h.press(OP, "Show contact", message=offer)
     assert db.scalar("SELECT status FROM connect_requests") == "revealed"
-    # only the OP gets a text_mention, pointing at the commenter; the commenter gets no identity
+    # the OP sees real contact details: name + @username (fake users have no username → name + profile button)
+    contact = h.last(OP)
+    assert "Name: U602" in contact.text and contact.button("Open profile")["url"] == f"tg://user?id={A}" and contact.button("Back to the thread")
     assert len(_mentions(h, OP)) == 1 and _mentions(h, A) == []
+    # the commenter is told, with a visible Revoke
+    told = h.last(A)
+    assert "Your contact was opened" in told.text and told.button("Revoke")
+
+
+async def test_contact_card_with_username(h):
+    h.tg.user_usernames[A] = "anon_person"
+    n, cid = await _setup_request(h)
+    await h.press(A, "Share my contact", message=h.last(A))
+    await h.press(OP, "Show contact", message=h.last(OP))
+    contact = h.last(OP)
+    assert "Telegram: @anon_person" in contact.text and contact.button("Open @anon_person")["url"] == "https://t.me/anon_person"
     import json
-    ents = _mentions(h, OP)[0].params["entities"]
+    ents = contact.params["entities"]
     ents = json.loads(ents) if isinstance(ents, str) else ents
-    assert [e for e in ents if str(e["type"]).upper().endswith("TEXT_MENTION")][0]["user"]["id"] == A
-    assert any("opened your profile" in t for t in h.texts(A))
+    assert any(str(e["type"]).upper().endswith("MENTION") and not str(e["type"]).upper().endswith("TEXT_MENTION") for e in ents)
     assert str(OP) not in str([dict(r) for r in db.q("SELECT * FROM connect_requests")])
 
 
@@ -139,7 +155,7 @@ async def test_commenter_declines(h):
     n, cid = await _setup_request(h)
     await h.press(A, "Decline", message=h.last(A))
     assert db.scalar("SELECT status FROM connect_requests") == "declined"
-    assert any("declined to share" in t for t in h.texts(OP))
+    assert any("declined" in t and "share their contact" in t for t in h.texts(OP))
     assert _mentions(h, OP) == []
 
 
@@ -149,7 +165,7 @@ async def test_op_withdraws_before_answer(h):
     accept = ask.callback("Share my contact")
     await h.press(OP, "Withdraw", message=h.last(OP))
     assert db.scalar("SELECT status FROM connect_requests") == "withdrawn"
-    assert any("withdrew their request" in t for t in h.texts(A))
+    assert any("Request withdrawn" in t for t in h.texts(A))
     # commenter's stale Accept is refused
     await h.press_raw(A, accept, message=ask)
     assert db.scalar("SELECT status FROM connect_requests") == "withdrawn" and _mentions(h, OP) == []
@@ -160,10 +176,12 @@ async def test_commenter_revokes_before_reveal_prevents_it(h):
     ask = h.last(A)
     await h.press(A, "Share my contact", message=ask)
     offer = h.last(OP)
-    await h.press(A, "Revoke", message=ask)
+    show = offer.callback("Show contact")
+    await h.press(A, "Revoke", message=h.last(A))
     assert db.scalar("SELECT status FROM connect_requests") == "revoked"
     assert any("changed their mind" in t for t in h.texts(OP))
-    await h.press(OP, "Show contact", message=offer)  # too late
+    assert offer.buttons() == []  # OP's offer card was closed
+    await h.press_raw(OP, show, message=offer)  # too late
     assert _mentions(h, OP) == []
 
 
@@ -181,6 +199,7 @@ async def test_commenter_revokes_after_reveal_within_window_only(h):
     ask = h.last(A)
     await h.press(A, "Share my contact", message=ask)
     await h.press(OP, "Show contact", message=h.last(OP))
+    ask = h.last(A)  # the reveal notice carries Revoke
     revoke = ask.callback("Revoke")
     db.execute("UPDATE connect_requests SET revealed_at=revealed_at-1000000")
     await h.press_raw(A, revoke, message=ask)

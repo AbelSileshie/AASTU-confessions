@@ -48,7 +48,7 @@ async def test_full_confession_lifecycle(h):
     await h.run_job(poster_job)
     posted = [c for c in h.tg.calls if c.chat_id == CHANNEL and c.method == "sendMessage"]
     assert len(posted) == 1
-    assert posted[0].text.startswith("🏫 Confession #1\n") and CONFESSION in posted[0].text and "#Campus" in posted[0].text
+    assert posted[0].text.startswith("Confession #1\n") and CONFESSION in posted[0].text and "#Campus" in posted[0].text
     assert "parse_mode" not in posted[0].params or not posted[0].params["parse_mode"]
     assert posted[0].button("Comments (0)")["url"].endswith("?start=c_1")
     assert db.scalar("SELECT count(*) FROM outbox") == 0
@@ -72,6 +72,7 @@ async def test_full_confession_lifecycle(h):
 async def test_submission_checks_in_order(h):
     await h.say(STUDENT, "✍️ Confess")
     await h.press(STUDENT, "Rant")
+    await h.press(STUDENT, "Done")
     await h.say(STUDENT, "too short")
     assert "Too short" in h.last(STUDENT).text
     await h.say(STUDENT, "please check my channel at https://t.me/somewhere for more details")
@@ -94,6 +95,7 @@ async def test_cooldown_and_duplicate(h):
     h.set("submit_cooldown_sec", 0)
     await h.say(STUDENT2, "/confess")
     await h.press(STUDENT2, "Campus")
+    await h.press(STUDENT2, "Done")
     await h.say(STUDENT2, CONFESSION.upper() + "!!!")
     assert "already submitted" in h.last(STUDENT2).text
 

@@ -75,11 +75,11 @@ def test_format_ad_footer_offset_correct_with_emoji(h):
 
 
 def test_format_confession_header_and_long_body(h):
-    text, ents = format_confession(7, "x" * 800, "#Rant", "😤 Rant")
-    assert text.startswith("😤 Confession #7\n\n") and ents[0].type == MessageEntity.BOLD
+    text, ents = format_confession(7, "x" * 800, "#Rant #Campus")
+    assert text.startswith("Confession #7\n\n") and text.endswith("\n\n#Rant #Campus") and ents[0].type == MessageEntity.BOLD
     assert any(e.type == MessageEntity.EXPANDABLE_BLOCKQUOTE for e in ents)
-    text, ents = format_confession(8, "short", "#Rant", "😤 Rant")
-    assert all(e.type != MessageEntity.EXPANDABLE_BLOCKQUOTE for e in ents)
+    text, ents = format_confession(8, "short", "")
+    assert text == "Confession #8\n\nshort" and all(e.type != MessageEntity.EXPANDABLE_BLOCKQUOTE for e in ents)
 
 
 # ---------------------------------------------------------------------------

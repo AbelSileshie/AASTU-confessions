@@ -88,7 +88,7 @@ def person_screen(uid: int, target: int):
 
 
 def cats_screen():
-    rows = [[(f"{'✅' if r['enabled'] else '⬜'} {r['label']} {r['hashtag']}", "hub", f"cat:{r['id']}")]
+    rows = [[(f"{'✅ ' if r['enabled'] else '⬜ '}{r['label']} {r['hashtag']}", "hub", f"cat:{r['id']}")]
             for r in db.q("SELECT * FROM categories ORDER BY sort, id")]
     rows.append([("➕ Add category", "hub", "cat:add"), BACK])
     return "🏷 Categories — tap to edit", kb(rows)

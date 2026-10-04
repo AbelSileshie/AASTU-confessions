@@ -63,6 +63,7 @@ class FakeRequest(BaseRequest):
         self.pinned: list[tuple[int, int]] = []
         self.topics: list[str] = []
         self.group_is_forum = True
+        self.user_usernames: dict[int, str] = {}
 
     async def initialize(self) -> None:  # noqa: D401
         return None
@@ -126,6 +127,11 @@ class FakeRequest(BaseRequest):
             self.calls.append(Sent(api, chat_id, _int(params.get("message_id")), str(params.get("text", "")), None, params))
             return self._ok(True)
         if api == "getChat":
+            if chat_id and chat_id > 0:  # a user who started the bot
+                info = {"id": chat_id, "type": "private", "first_name": f"U{chat_id}", "accent_color_id": 0, "max_reaction_count": 11}
+                if chat_id in self.user_usernames:
+                    info["username"] = self.user_usernames[chat_id]
+                return self._ok(info)
             info = {"id": chat_id, "type": "channel", "title": "Test", "accent_color_id": 0, "max_reaction_count": 11}
             if chat_id == -1002:  # admin group
                 info.update(type="supergroup", is_forum=self.group_is_forum)
