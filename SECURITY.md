@@ -35,9 +35,7 @@ submit cooldown + daily cap + queue soft cap + open hours · comment cooldown ·
 ## Access separation
 
 - Students never see a listing of other people's confessions inside the bot: `💬 Browse recent` was removed; the only
-  list is `📝 My confessions` (own author hash). The `menu:browse` action renders the staff monitor for moderators/admins
-  and the user's own list for everyone else. Comment threads remain reachable through the channel button (public feature).
-- `📰 Recent` (moderators + admins) shows the latest posts with approver, flags and a one-tap take down.
+  list is `📝 My confessions` (own author hash). Any legacy `browse` action renders the user's own list only. Comment threads remain reachable through the channel button (public feature).
 
 ## Connect (contact sharing)
 

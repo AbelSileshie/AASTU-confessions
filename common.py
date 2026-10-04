@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 import db
 from config import cfg
 from i18n import SUPPORTED, t
-from security import author_hash, decrypt_ref, encrypt_ref, has_role, is_private_chat, role_of, sign_cb  # noqa: F401 - re-exported
+from security import author_hash, decrypt_ref, encrypt_ref, is_private_chat, role_of, sign_cb  # noqa: F401 - re-exported
 
 log = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ def nav_keyboard(lang: str, user_id: int | None = None) -> ReplyKeyboardMarkup:
     rows.append([t(lang, "menu.lang")])
     role = role_of(user_id) if user_id else "user"
     if role in ("moderator", "admin", "owner"):
-        staff_row = ["📋 Queue", "📰 Recent", "📊 Stats"] + (["⚙️ Admin"] if role != "moderator" else [])
+        staff_row = ["📋 Queue", "📊 Stats"] + (["⚙️ Admin"] if role != "moderator" else [])
         rows.append(staff_row)
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
                                input_field_placeholder=t(lang, "nav.placeholder"))
@@ -323,36 +323,6 @@ async def show_lang(message) -> None:
     await message.reply_text(t("en", "lang.pick"), reply_markup=lang_markup())
 
 
-def recent_posts(limit: int = 10) -> list[dict]:
-    """STAFF ONLY: latest posts with moderation metadata."""
-    return [dict(r) for r in db.q(
-        "SELECT number, channel_msg_id, comment_count, category_id, approved_by, risk_hits, posted_at, deleted "
-        "FROM posts WHERE kind='confession' ORDER BY number DESC LIMIT ?", (limit,))]
-
-
-async def show_recent_staff(message, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """📰 Recent — monitoring view for moderators/admins."""
-    from fmt import Rich
-
-    items = recent_posts()
-    r = Rich().bold("📰 Recent posts").nl().italic("Latest 10 · tap to open, view the thread or take down.")
-    buttons = []
-    for p in items:
-        hits = json.loads(p["risk_hits"] or "[]")
-        cat = category(p["category_id"])
-        state = "🗑️ " if p["deleted"] else ("⚠️ " if hits else "")
-        r.nl(2).bold(f"{state}#{p['number']}").text(f" · {cat['label']} · 💬 {p['comment_count']} · ").text(staff_name(p["approved_by"]))
-        if not p["deleted"]:
-            buttons.append([(f"↗ #{p['number']}", post_link(context, p["channel_msg_id"])),
-                            (f"💬 #{p['number']}", "cm", f"pg:{p['number']}:0"),
-                            (f"🛑 #{p['number']}", "td", f"go:{p['number']}")])
-    if not items:
-        r.nl(2).text("Nothing posted yet.")
-    buttons.append([(t("en", "menu.back"), "menu", "home")])
-    text, ents = r.build()
-    await message.reply_text(text, entities=ents, reply_markup=kb(buttons), disable_web_page_preview=True)
-
-
 def my_confessions(author: str, limit: int = 5) -> list[dict]:
     """Status of the author's recent confessions across pending / live / declined (pure given DB)."""
     rows: list[dict] = []
@@ -395,13 +365,7 @@ async def show_mine(message, lang: str, author: str) -> None:
 async def dispatch_nav(message, context: ContextTypes.DEFAULT_TYPE, lang: str, action: str | None) -> bool:
     """Render the hub screen for a bottom-keyboard action. Returns False for
     actions owned by conversations (confess/advertise)."""
-    if action == "browse":
-        # staff: monitoring view; students only ever see their own confessions
-        if has_role(message.chat_id, "moderator"):
-            await show_recent_staff(message, context)
-        else:
-            await show_mine(message, lang, author_hash(message.chat_id))
-    elif action == "mine":
+    if action in ("browse", "mine"):  # legacy 'browse' buttons → own confessions only
         await show_mine(message, lang, author_hash(message.chat_id))
     elif action == "rules":
         await show_rules(message, lang)

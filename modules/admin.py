@@ -50,7 +50,6 @@ def home_screen(uid: int):
         [("🏷 Categories", "hub", "cats"), ("📦 Packages", "hub", "pkgs")],
         [("🚫 Wordlist", "hub", "words"), ("💰 Ads", "hub", "ads")],
         [("💬 Group setup", "hub", "group"), ("🩺 Health", "hub", "health")],
-        [("📰 Recent posts", "hub", "recent")],
     ]
     if owner:
         rows.insert(2, [("🏦 Payout accounts", "hub", "pay")])
@@ -239,10 +238,6 @@ async def hub_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif screen == "ads":
         await _render(q, ads_screen())
         await send_ad_cards(q.message)
-    elif screen == "recent":
-        from common import show_recent_staff
-
-        await show_recent_staff(q.message, context)
 
 
 async def _staff(q, context, uid: int, rest: list[str]) -> None:

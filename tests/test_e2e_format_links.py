@@ -148,7 +148,6 @@ async def test_no_raw_staff_ids_in_human_screens(h):
     await h.press(MOD, "Approve")
     await h.run_job(poster_job)
     await h.say(MOD, "📊 Stats")
-    await h.say(MOD, "📰 Recent")
     await h.say(ADMIN, "/admin")
     await h.press(ADMIN, "Staff")
     await h.press(ADMIN, "Moderator")

@@ -148,20 +148,14 @@ async def test_comment_prompt_has_exits_and_back_returns_to_thread(h):
     assert _dead_ends(h, S2) == []
 
 
-async def test_staff_recent_monitor_and_student_isolation(h):
+async def test_student_isolation_no_listing(h):
     await _post_one(h)
-    # staff monitor
-    await h.say(MOD, "📰 Recent")
-    mon = h.last(MOD)
-    assert "#1" in mon.text and mon.button("💬 #1") and mon.button("🛑 #1") and mon.button("↗ #1")["url"].startswith("https://t.me/")
-    await h.press(MOD, "💬 #1")
-    assert "Comments on #1" in h.last(MOD).text
-    # student: label does nothing special, stale browse callback shows only their own list
-    await h.say(S2, "📰 Recent")
-    assert "#1" not in h.last(S2).text
     from security import sign_cb
-    await h.press_raw(S2, sign_cb("menu", "browse"))
+    await h.say(S2, "/start")
+    await h.press_raw(S2, sign_cb("menu", "browse"))  # legacy button → own list only
     assert "haven't sent" in h.last(S2).text and "#1" not in h.last(S2).text
+    await h.say(MOD, "/start")
+    assert "📰 Recent" not in h.tg.sent_to(MOD)[-2].reply_labels()
 
 
 async def test_ad_flow_back_and_cancel(h):

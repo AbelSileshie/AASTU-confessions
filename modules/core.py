@@ -1,15 +1,15 @@
-"""/start, /help, /rules, language picker, browse recent, bottom-keyboard routing, fallbacks."""
+"""/start, /help, /rules, language picker, bottom-keyboard routing, fallbacks."""
 from __future__ import annotations
 
 from telegram import MenuButtonCommands, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-from common import dispatch_nav, pending_get, ensure_user, is_private_chat, kb, lang_of, main_menu, nav_action, nav_keyboard, nav_regex, send_home, show_help, show_home, show_lang, show_mine, show_recent_staff, show_rules
+from common import dispatch_nav, pending_get, ensure_user, is_private_chat, kb, lang_of, main_menu, nav_action, nav_keyboard, nav_regex, send_home, show_help, show_home, show_lang, show_mine, show_rules
 import db
 from config import cfg
 from i18n import SUPPORTED, t
-from security import author_hash, has_role, verify_cb
+from security import author_hash, verify_cb
 from textfilter import strip_invisible
 
 DEEP_LINK_PREFIXES = ("inv_", "c_", "C_")
@@ -117,15 +117,6 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_help(update.message, lang_of(update))
 
 
-async def recent_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_private_chat(update):
-        return
-    if has_role(update.effective_user.id, "moderator"):
-        await show_recent_staff(update.message, context)
-    else:
-        await unknown_text(update, context)
-
-
 async def set_menu_button(app: Application) -> None:
     try:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
@@ -140,7 +131,6 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("lang", lang_cmd))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r"^menu:(home|rules|lang|browse|help|mine):"))
     app.add_handler(CallbackQueryHandler(lang_cb, pattern=r"^lang:"))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^📰 Recent$") & filters.ChatType.PRIVATE, recent_label))
 
 
 # keys other modules keep in user_data while a stateful (non-conversation) step is pending
