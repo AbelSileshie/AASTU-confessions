@@ -28,7 +28,7 @@ payments.py         Verify.et client + acceptance checks (shared service)
 fmt.py              UTF-16-aware rich text builder (entities, never parse_mode)
 ops.py              staff/catalog/wordlist/stats operations shared by commands and /admin menus
 common.py           shared helpers for modules
-modules/            core submit review comments staff admin settings catalog wordlist ads ads_admin takedown stats
+modules/            core submit review comments staff admin setup settings catalog wordlist ads ads_admin takedown stats
 jobs/               poster housekeeping backup
 web/server.py       aiohttp: Telegram webhook, /webhooks/verify, /healthz
 migrations/         additive SQL migrations applied on startup
@@ -54,10 +54,15 @@ openssl rand -hex 32                                                        # HM
 .venv/bin/python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"  # FERNET_KEY
 ```
 
-Telegram setup: create the bot with @BotFather, create a public channel and add the bot as
-an admin (post, edit, delete, pin), create a private admin group and a private backup
-channel and add the bot to both. Get the `-100…` ids by forwarding a message from each to
-@userinfobot or similar.
+Telegram setup (no ids to copy): create the bot with @BotFather, then **add the bot as an admin**
+to your public channel (post, edit, delete, pin), to a private admin group (with *Manage topics*)
+and to a private backup channel. Each time, the bot DMs the owner *"I was added to … — what should
+I use it for?"* with one-tap buttons. `CHANNEL_ID`/`ADMIN_GROUP_ID`/`BACKUP_CHANNEL_ID` in `.env`
+are only needed if you prefer to set them by hand.
+
+`⚙️ Admin → 🧭 Setup checklist` tells you exactly what is still missing before launch (bot rights,
+topics, moderators, rules, backups, payout accounts, Verify.et keys); it is also DM'd to the
+owner at startup while anything is red.
 
 First run: the owner (`OWNER_ID`) has every permission. Add staff with `/staff add` and send
 them the invite link. Add receiving accounts with `/payout_accounts add telebirr 09xxxxxxxx "Holder Name"`.
@@ -70,7 +75,7 @@ them the invite link. Add receiving accounts with `/payout_accounts add telebirr
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q            # 222 tests, ~25 s
+.venv/bin/python -m pytest -q            # 229 tests, ~25 s
 .venv/bin/bandit -q -r . -x ./.venv,./tests
 .venv/bin/pip-audit
 ```

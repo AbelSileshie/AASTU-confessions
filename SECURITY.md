@@ -46,6 +46,12 @@ contact them). OP can withdraw a pending request or decline an accepted one. Eve
 ownership-checked `UPDATE … WHERE status IN (…) RETURNING`, so replays and races cannot double-reveal. The only place a
 raw id travels is inside the `text_mention` entity sent to the OP; nothing is persisted.
 
+## Chat assignment (setup)
+
+`my_chat_member` updates only *offer* a chat to the owner; assignment requires an owner-signed callback. Chosen ids
+live in `settings` (`chat_*`) and override `.env`. Reassigning the admin group resets topic ids; reassigning the
+channel clears the cached channel info.
+
 ## Admin group topics
 
 Created automatically at startup and re-checked hourly (`ensure_topics`); the owner is warned once if Topics are off or
