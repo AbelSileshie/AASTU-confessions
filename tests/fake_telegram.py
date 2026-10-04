@@ -62,6 +62,7 @@ class FakeRequest(BaseRequest):
         self.deleted: list[tuple[int, int]] = []
         self.pinned: list[tuple[int, int]] = []
         self.topics: list[str] = []
+        self.group_is_forum = True
 
     async def initialize(self) -> None:  # noqa: D401
         return None
@@ -126,7 +127,9 @@ class FakeRequest(BaseRequest):
             return self._ok(True)
         if api == "getChat":
             info = {"id": chat_id, "type": "channel", "title": "Test", "accent_color_id": 0, "max_reaction_count": 11}
-            if self.channel_username:
+            if chat_id == -1002:  # admin group
+                info.update(type="supergroup", is_forum=self.group_is_forum)
+            elif self.channel_username:
                 info["username"] = self.channel_username
             return self._ok(info)
         if api == "exportChatInviteLink":

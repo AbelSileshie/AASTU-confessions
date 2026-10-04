@@ -81,6 +81,56 @@ TOPIC_NAMES = {"flagged": "⚠️ Flagged", "takedowns": "🛑 Takedowns",
                "declined": "🗂 Declined", "ads": "💰 Ads", "alerts": "🔔 Alerts"}
 
 
+async def ensure_topics(context: ContextTypes.DEFAULT_TYPE, actor: int = 0, force: bool = False) -> dict:
+    """Create any missing admin-group topics and remember their thread ids.
+
+    Runs at startup and hourly (housekeeping), and from ⚙️ Admin → Group setup. If the group
+    is not a forum (Topics off) or the bot lacks 'Manage topics', the owner is told once
+    (flag in meta) and everything keeps flowing into the main chat.
+    Returns {"created": [...], "missing": [...], "error": str|None}."""
+    from config import invalidate
+
+    env = context.bot_data.get("env")
+    result = {"created": [], "missing": [k for k in TOPICS if not cfg(f"topic_{k}", 0)], "error": None}
+    if not env or not env.admin_group_id or not result["missing"]:
+        return result
+    try:
+        chat = await context.bot.get_chat(env.admin_group_id)
+        if not getattr(chat, "is_forum", False):
+            result["error"] = "topics_disabled"
+    except TelegramError as exc:
+        result["error"] = type(exc).__name__
+    if not result["error"]:
+        for k in list(result["missing"]):
+            try:
+                topic = await context.bot.create_forum_topic(env.admin_group_id, TOPIC_NAMES[k])
+            except TelegramError as exc:
+                result["error"] = type(exc).__name__
+                break
+            db.execute("UPDATE settings SET value=?, updated_by=?, updated_at=? WHERE key=?",
+                       (str(topic.message_thread_id), actor, db.now(), f"topic_{k}"))
+            invalidate(f"topic_{k}")
+            result["created"].append(k)
+            result["missing"].remove(k)
+    if result["created"]:
+        db.audit(actor, "topics_create", detail=",".join(result["created"]))
+    if result["error"] and env.owner_id:
+        warned = db.scalar("SELECT v FROM meta WHERE k='topics_warned'")
+        if force or not warned:
+            db.execute("INSERT INTO meta(k, v) VALUES ('topics_warned', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(db.now()),))
+            hint = ("Topics are not enabled in the admin group. Open the group → Edit → Topics → on, and give the bot the "
+                    "'Manage topics' admin right. The bot retries every hour; alerts go to the main chat until then."
+                    if result["error"] == "topics_disabled" else
+                    f"Could not create admin-group topics ({result['error']}). Check the bot's admin rights; it retries hourly.")
+            try:
+                await context.bot.send_message(env.owner_id, "⚠️ " + hint)
+            except TelegramError:
+                pass
+    elif not result["missing"]:
+        db.execute("DELETE FROM meta WHERE k='topics_warned'")
+    return result
+
+
 def topic_id(kind: str) -> int | None:
     """Forum thread id for an alert kind, or None → main chat."""
     tid = cfg(f"topic_{kind}", 0) if kind in TOPICS else 0
@@ -335,6 +385,8 @@ async def show_mine(message, lang: str, author: str) -> None:
             r.text(t(lang, "mine.declined", reason=t(lang, "reject." + it["reason"])))
         else:
             r.text(t(lang, f"mine.{it['status']}"))
+    if db.one("SELECT 1 FROM connect_requests WHERE (requester=? OR target=?) AND status IN ('pending','accepted','revealed')", (author, author)):
+        buttons.append([(t(lang, "connect.btn_list"), "cn", "list")])
     buttons.append([(t(lang, "menu.back"), "menu", "home")])
     text, ents = r.build()
     await message.reply_text(text, entities=ents, reply_markup=kb(buttons))

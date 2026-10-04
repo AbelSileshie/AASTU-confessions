@@ -21,7 +21,7 @@ import db
 import security
 from config import load_env
 from jobs.backup import backup_job
-from jobs.housekeeping import comment_digest_job, counter_refresh_job, daily_purge_job, housekeeping_job
+from jobs.housekeeping import comment_digest_job, counter_refresh_job, daily_purge_job, hourly_job, housekeeping_job
 from jobs.poster import poster_job, unpin_job
 from modules import MODULES
 from payments import handle_verify_webhook
@@ -69,6 +69,7 @@ def register_jobs(app: Application) -> None:
     jq.run_repeating(housekeeping_job, interval=60, first=20, name="housekeeping")
     jq.run_repeating(counter_refresh_job, interval=60, first=30, name="counters")
     jq.run_repeating(comment_digest_job, interval=60, first=45, name="comment_digest")
+    jq.run_repeating(hourly_job, interval=3600, first=600, name="hourly")
     jq.run_repeating(unpin_job, interval=300, first=60, name="unpin")
     jq.run_daily(daily_purge_job, time=dtime(hour=2, minute=30, tzinfo=timezone.utc), name="purge")
     jq.run_daily(backup_job, time=dtime(hour=3, minute=0, tzinfo=timezone.utc), name="backup")
@@ -85,7 +86,7 @@ COMMANDS = [
 
 
 async def post_init(app: Application) -> None:
-    from common import channel_info
+    from common import channel_info, ensure_topics
 
     env = app.bot_data["env"]
     for attempt in range(3):
@@ -98,6 +99,7 @@ async def post_init(app: Application) -> None:
     ctx = ContextTypes.DEFAULT_TYPE(app)
     info = await channel_info(ctx, force=True)
     app.bot_data["channel_private"] = not info.get("username")
+    await ensure_topics(ctx, actor=env.owner_id)
     await app.bot.set_my_commands(COMMANDS)
     from modules.core import set_menu_button
 

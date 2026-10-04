@@ -64,7 +64,7 @@ def expire_orders(now: int) -> list[dict]:
 
 def expire_connects(now: int) -> None:
     ttl = cfg("connect_ttl_hours", 168)
-    db.execute("UPDATE connect_requests SET status='expired', resolved=? WHERE status='pending' AND created<?",
+    db.execute("UPDATE connect_requests SET status='expired', resolved=? WHERE status IN ('pending','accepted') AND created<?",
                (now, now - ttl * 3600))
 
 
@@ -85,6 +85,15 @@ async def purge_declined(context, now: int) -> int:
                 pass
         db.execute("DELETE FROM declined WHERE id=?", (r["id"],))
     return len(rows)
+
+
+async def hourly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    from common import ensure_topics
+
+    try:
+        await ensure_topics(context)
+    except Exception:  # noqa: BLE001
+        log.exception("ensure_topics failed")
 
 
 async def housekeeping_job(context: ContextTypes.DEFAULT_TYPE) -> None:

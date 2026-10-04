@@ -11,7 +11,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
-from common import TOPICS, TOPIC_NAMES, bot_link, fmt_ts, is_private_chat, kb, pending_clear, pending_get, pending_set, send_ad_cards, staff_name
+from common import TOPICS, TOPIC_NAMES, bot_link, ensure_topics, fmt_ts, is_private_chat, kb, pending_clear, pending_get, pending_set, send_ad_cards, staff_name
 from fmt import Rich
 from config import cfg, invalidate
 from ops import (
@@ -154,8 +154,11 @@ def group_screen():
     for k in TOPICS:
         tid = cfg(f"topic_{k}", 0)
         lines.append(f"{TOPIC_NAMES[k]}: {'thread ' + str(tid) if tid else 'main chat'}")
-    lines.append("\nEnable Topics in the group settings and give the bot 'Manage topics', then tap Create topics.")
-    return "\n".join(lines), kb([[("🧵 Create topics", "hub", "group:create"), ("♻️ Reset to main chat", "hub", "group:reset")], [BACK]])
+    missing = [k for k in TOPICS if not cfg(f"topic_{k}", 0)]
+    lines.append("\n" + ("✅ All topics are set up. The bot re-checks hourly." if not missing else
+                         "The bot creates missing topics automatically at startup and every hour. "
+                         "Requirements: Topics enabled in the group and the bot has the 'Manage topics' right."))
+    return "\n".join(lines), kb([[("🧵 Create missing now", "hub", "group:create"), ("♻️ Reset to main chat", "hub", "group:reset")], [BACK]])
 
 
 def health_screen():
@@ -337,20 +340,15 @@ async def _group(q, context, uid, rest) -> None:
         if not env.admin_group_id:
             await q.answer("ADMIN_GROUP_ID is not set.", show_alert=True)
             return
-        created = 0
-        for k in TOPICS:
-            if cfg(f"topic_{k}", 0):
-                continue
-            try:
-                topic = await context.bot.create_forum_topic(env.admin_group_id, TOPIC_NAMES[k])
-            except TelegramError as exc:
-                await q.answer(f"Could not create topics ({type(exc).__name__}). Is Topics enabled and the bot allowed to manage them?", show_alert=True)
-                break
-            db.execute("UPDATE settings SET value=?, updated_by=?, updated_at=? WHERE key=?",
-                       (str(topic.message_thread_id), uid, db.now(), f"topic_{k}"))
-            invalidate(f"topic_{k}")
-            created += 1
-        db.audit(uid, "topics_create", detail=str(created))
+        res = await ensure_topics(context, actor=uid, force=True)
+        if res["error"] == "topics_disabled":
+            await q.answer("Topics are off in the group. Group → Edit → Topics → on, then try again.", show_alert=True)
+        elif res["error"]:
+            await q.answer(f"Could not create topics ({res['error']}). Check the bot's 'Manage topics' right.", show_alert=True)
+        elif res["created"]:
+            await q.answer(f"Created {len(res['created'])} topic(s).")
+        else:
+            await q.answer("All topics already exist.")
     elif rest and rest[0] == "reset":
         for k in TOPICS:
             db.execute("UPDATE settings SET value='0' WHERE key=?", (f"topic_{k}",))

@@ -39,6 +39,21 @@ submit cooldown + daily cap + queue soft cap + open hours · comment cooldown ·
   and the user's own list for everyone else. Comment threads remain reachable through the channel button (public feature).
 - `📰 Recent` (moderators + admins) shows the latest posts with approver, flags and a one-tap take down.
 
+## Connect (contact sharing)
+
+One-way: only the confession author (OP) can ever receive a contact; the commenter never learns who the OP is.
+Two-step: commenter accepts → OP must explicitly tap **Show contact**; until then the commenter can revoke and
+nothing is revealed. After reveal the commenter can still revoke for `connect_revoke_hours` (the OP is told not to
+contact them). OP can withdraw a pending request or decline an accepted one. Every transition is an atomic,
+ownership-checked `UPDATE … WHERE status IN (…) RETURNING`, so replays and races cannot double-reveal. The only place a
+raw id travels is inside the `text_mention` entity sent to the OP; nothing is persisted.
+
+## Admin group topics
+
+Created automatically at startup and re-checked hourly (`ensure_topics`); the owner is warned once if Topics are off or
+the bot lacks *Manage topics*, and alerts fall back to the main chat. A deleted topic is detected on the next failed
+send and recreated on the next hourly run.
+
 ## Links
 
 - Channel links use `t.me/<username>/<msg>` when the channel is public. If it is private the bot falls back to the

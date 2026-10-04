@@ -147,6 +147,7 @@ async def test_alerts_route_to_topics_and_fall_back_to_main(h):
     assert "Takedown request · #1" in td.text and td.params.get("message_thread_id") == 31
     # unconfigured kind → main chat
     from jobs.housekeeping import housekeeping_job
+    h.set("topic_alerts", 0)
     h.set("queue_alert_threshold", 1)
     await h.submit_confession(S2, "Another confession long enough to sit in the queue for the alert.")
     await h.run_job(housekeeping_job)
@@ -154,16 +155,52 @@ async def test_alerts_route_to_topics_and_fall_back_to_main(h):
     assert "Review queue" in alert.text and alert.params.get("message_thread_id") is None
 
 
-async def test_group_setup_creates_topics(h):
+async def test_topics_created_automatically_at_startup(h):
+    from config import cfg
+    assert len(h.tg.topics) == 5
+    assert cfg("topic_flagged") == 101 and cfg("topic_alerts") == 105
+    assert db.scalar("SELECT count(*) FROM audit WHERE action='topics_create'") == 1
+
+
+async def test_topics_retry_hourly_and_setup_button(h):
+    from common import ensure_topics
+    from config import cfg
+
     await _two_stage(h)
+    # one topic lost → hourly check recreates only that one
+    h.set("topic_declined", 0)
+    res = await ensure_topics(h.context())
+    assert res["created"] == ["declined"] and cfg("topic_declined") == 106
+    # already complete → no-op
+    assert (await ensure_topics(h.context()))["created"] == []
     await h.say(ADMIN, "/admin")
     await h.press(ADMIN, "Group setup")
-    await h.press(ADMIN, "Create topics")
-    assert len(h.tg.topics) == 5
-    from config import cfg
-    assert cfg("topic_flagged") == 101 and cfg("topic_alerts") == 105
+    assert "All topics are set up" in h.last(ADMIN).text or any("All topics" in c.text for c in h.tg.calls if c.method == "editMessageText")
     await h.press(ADMIN, "Reset to main chat")
     assert cfg("topic_flagged") == 0
+    await h.press(ADMIN, "Create missing now")
+    assert cfg("topic_flagged") == 107
+
+
+async def test_topics_disabled_warns_owner_once_and_falls_back(h):
+    from common import ensure_topics
+
+    await _two_stage(h)
+    for k in ("flagged", "takedowns", "declined", "ads", "alerts"):
+        h.set(f"topic_{k}", 0)
+    h.tg.group_is_forum = False
+    before = len(h.tg.sent_to(OWNER))
+    res = await ensure_topics(h.context())
+    assert res["error"] == "topics_disabled" and res["created"] == []
+    assert len(h.tg.sent_to(OWNER)) == before + 1 and "Topics are not enabled" in h.last(OWNER).text
+    await ensure_topics(h.context())
+    assert len(h.tg.sent_to(OWNER)) == before + 1  # warned once
+    # alerts still flow into the main chat
+    h.set("queue_alert_threshold", 1)
+    await h.submit_confession(S, TEXT)
+    from jobs.housekeeping import housekeeping_job
+    await h.run_job(housekeeping_job)
+    assert _group_cards(h)[-1].params.get("message_thread_id") is None
 
 
 # ---------------------------------------------------------------------------

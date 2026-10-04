@@ -70,7 +70,7 @@ them the invite link. Add receiving accounts with `/payout_accounts add telebirr
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q            # 215 tests, ~25 s
+.venv/bin/python -m pytest -q            # 222 tests, ~25 s
 .venv/bin/bandit -q -r . -x ./.venv,./tests
 .venv/bin/pip-audit
 ```
@@ -114,8 +114,9 @@ takedown by someone else → the moderator who approved it is told why
 ```
 
 Other topics: 🛑 Takedowns (requests, auto-hidden comments), 💰 Ads (payment review, advertiser
-messages with [↩️ Reply]), 🔔 Alerts (queue, poster, backups). **Group setup:** enable *Topics*,
-give the bot *Manage topics*, then `⚙️ Admin → Group setup → Create topics`.
+messages with [↩️ Reply]), 🔔 Alerts (queue, poster, backups). **Group setup:** enable *Topics* in the admin group and
+give the bot *Manage topics* — the bot creates the topics itself at startup and re-checks hourly (`⚙️ Admin → Group
+setup` shows the state and can force it).
 
 ## Student extras
 

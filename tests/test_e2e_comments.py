@@ -94,87 +94,140 @@ async def test_counter_refresh_edits_channel_button(h):
     assert edits and edits[-1].button("Comments (1)")
 
 
-async def test_connect_requires_consent_and_exchanges_contacts(h):
+def _mentions(h, chat_id):
+    return [c for c in h.tg.sent_to(chat_id) if "TEXT_MENTION" in str(c.params.get("entities", "")).upper()]
+
+
+async def _setup_request(h):
     n = await _post_one(h)
     await _comment(h, A, n, "I know exactly what you mean")
     cid = db.scalar("SELECT id FROM comments")
-    # non-OP sees no connect button
-    await h.say(B, f"/start c_{n}")
-    assert h.last(B).button("🤝") is None
-    # OP sees it and asks
     await h.say(OP, f"/start c_{n}")
     assert h.last(OP).button(f"🤝 {cid}")
+    await h.say(B, f"/start c_{n}")
+    assert h.last(B).button("🤝") is None  # non-OP never sees Connect
     await h.press(OP, f"🤝 {cid}")
-    assert "Request sent" in h.last(OP).text
+    return n, cid
+
+
+async def test_connect_is_one_way_and_two_step(h):
+    n, cid = await _setup_request(h)
+    op_sent = h.last(OP)
+    assert "Request sent" in op_sent.text and op_sent.button("Withdraw")
     ask = h.last(A)
-    assert "would like to connect" in ask.text and "I know exactly" in ask.text
-    assert str(OP) not in ask.text  # nothing revealed yet
-    # second request blocked while pending
-    await h.say(OP, f"/start c_{n}")
-    h.set("connect_cooldown_sec", 0)
-    await h.press(OP, f"🤝 {cid}")
-    assert db.scalar("SELECT count(*) FROM connect_requests") == 1
-    # A accepts → both receive text_mention entities pointing at each other
+    assert "would like to contact you" in ask.text and "Only they receive it" in ask.text and str(OP) not in ask.text
+    # commenter accepts → nothing revealed yet; OP must take the second step
     await h.press(A, "Share my contact", message=ask)
     assert db.scalar("SELECT status FROM connect_requests") == "accepted"
-    to_a = h.tg.last(A)
-    to_op = h.tg.last(OP)
-    assert "accepted" in to_a.text.lower() or "Here is" in to_a.text
-    ent_a = to_a.params["entities"]
-    ent_op = to_op.params["entities"]
+    assert _mentions(h, OP) == [] and _mentions(h, A) == []
+    assert h.last(A).text.startswith("✅ You agreed") and ask.button("Revoke")
+    offer = h.last(OP)
+    assert "agreed to share" in offer.text and offer.button("Show contact") and offer.button("Not interested")
+    await h.press(OP, "Show contact", message=offer)
+    assert db.scalar("SELECT status FROM connect_requests") == "revealed"
+    # only the OP gets a text_mention, pointing at the commenter; the commenter gets no identity
+    assert len(_mentions(h, OP)) == 1 and _mentions(h, A) == []
     import json
-    ea = json.loads(ent_a) if isinstance(ent_a, str) else ent_a
-    eo = json.loads(ent_op) if isinstance(ent_op, str) else ent_op
-    assert ea[0]["type"] == "text_mention" and ea[0]["user"]["id"] == OP
-    assert eo[0]["type"] == "text_mention" and eo[0]["user"]["id"] == A
-    # nothing persisted about raw ids
+    ents = _mentions(h, OP)[0].params["entities"]
+    ents = json.loads(ents) if isinstance(ents, str) else ents
+    assert [e for e in ents if str(e["type"]).upper().endswith("TEXT_MENTION")][0]["user"]["id"] == A
+    assert any("opened your profile" in t for t in h.texts(A))
     assert str(OP) not in str([dict(r) for r in db.q("SELECT * FROM connect_requests")])
 
 
-async def test_connect_decline_reveals_nothing(h):
-    n = await _post_one(h)
-    await _comment(h, A, n, "a comment")
-    cid = db.scalar("SELECT id FROM comments")
-    await h.say(OP, f"/start c_{n}")
-    await h.press(OP, f"🤝 {cid}")
+async def test_commenter_declines(h):
+    n, cid = await _setup_request(h)
+    await h.press(A, "Decline", message=h.last(A))
+    assert db.scalar("SELECT status FROM connect_requests") == "declined"
+    assert any("declined to share" in t for t in h.texts(OP))
+    assert _mentions(h, OP) == []
+
+
+async def test_op_withdraws_before_answer(h):
+    n, cid = await _setup_request(h)
     ask = h.last(A)
-    accept_data = ask.callback("Share my contact")
-    await h.press(A, "Decline", message=ask)
-    assert db.scalar("SELECT status FROM connect_requests") == "declined"
-    assert "declined" in h.last(OP).text.lower()
-    assert not any("text_mention" in str(c.params.get("entities", "")) for c in h.tg.sent_to(OP))
-    # replaying the accept button after decline is rejected
-    await h.press_raw(A, accept_data, message=ask)
-    assert db.scalar("SELECT status FROM connect_requests") == "declined"
+    accept = ask.callback("Share my contact")
+    await h.press(OP, "Withdraw", message=h.last(OP))
+    assert db.scalar("SELECT status FROM connect_requests") == "withdrawn"
+    assert any("withdrew their request" in t for t in h.texts(A))
+    # commenter's stale Accept is refused
+    await h.press_raw(A, accept, message=ask)
+    assert db.scalar("SELECT status FROM connect_requests") == "withdrawn" and _mentions(h, OP) == []
 
 
-async def test_connect_cannot_be_initiated_by_commenter_or_forged(h):
-    n = await _post_one(h)
-    await _comment(h, A, n, "a comment")
-    cid = db.scalar("SELECT id FROM comments")
+async def test_commenter_revokes_before_reveal_prevents_it(h):
+    n, cid = await _setup_request(h)
+    ask = h.last(A)
+    await h.press(A, "Share my contact", message=ask)
+    offer = h.last(OP)
+    await h.press(A, "Revoke", message=ask)
+    assert db.scalar("SELECT status FROM connect_requests") == "revoked"
+    assert any("changed their mind" in t for t in h.texts(OP))
+    await h.press(OP, "Show contact", message=offer)  # too late
+    assert _mentions(h, OP) == []
+
+
+async def test_op_not_interested_after_accept(h):
+    n, cid = await _setup_request(h)
+    await h.press(A, "Share my contact", message=h.last(A))
+    await h.press(OP, "Not interested", message=h.last(OP))
+    assert db.scalar("SELECT status FROM connect_requests") == "refused"
+    assert any("decided not to connect" in t for t in h.texts(A))
+    assert _mentions(h, OP) == []
+
+
+async def test_commenter_revokes_after_reveal_within_window_only(h):
+    n, cid = await _setup_request(h)
+    ask = h.last(A)
+    await h.press(A, "Share my contact", message=ask)
+    await h.press(OP, "Show contact", message=h.last(OP))
+    revoke = ask.callback("Revoke")
+    db.execute("UPDATE connect_requests SET revealed_at=revealed_at-1000000")
+    await h.press_raw(A, revoke, message=ask)
+    assert db.scalar("SELECT status FROM connect_requests") == "revealed"  # window passed
+    db.execute("UPDATE connect_requests SET revealed_at=?", (db.now(),))
+    await h.press_raw(A, revoke, message=ask)
+    assert db.scalar("SELECT status FROM connect_requests") == "revoked"
+    assert any("Please do not contact them" in t for t in h.texts(OP))
+
+
+async def test_connect_forgery_and_wrong_actor(h):
+    n, cid = await _setup_request(h)
+    rid = db.scalar("SELECT id FROM connect_requests")
     from security import sign_cb
-    await h.say(B, f"/start c_{n}")
-    # B forges the OP's connect button
-    await h.press_raw(B, sign_cb("cn", f"ask:{cid}"))
-    assert db.scalar("SELECT count(*) FROM connect_requests") == 0
-    # unsigned garbage
-    await h.press_raw(B, f"cn:ask:{cid}:0000000000")
-    assert db.scalar("SELECT count(*) FROM connect_requests") == 0
-    # disabled setting
+    # third party / wrong role presses every button
+    for who, action in ((B, "yes"), (B, "no"), (B, "revoke"), (B, "withdraw"), (B, "show"), (B, "refuse"),
+                        (OP, "yes"), (OP, "revoke"), (A, "withdraw"), (A, "show"), (A, "refuse")):
+        await h.say(who, "/start")
+        await h.press_raw(who, sign_cb("cn", f"{action}:{rid}"))
+    assert db.scalar("SELECT status FROM connect_requests") == "pending"
+    assert _mentions(h, OP) == [] and _mentions(h, A) == [] and _mentions(h, B) == []
+    # unsigned
+    await h.press_raw(A, f"cn:yes:{rid}:000000000000")
+    assert db.scalar("SELECT status FROM connect_requests") == "pending"
     h.set("connect_enabled", 0)
     await h.say(OP, f"/start c_{n}")
-    assert h.last(OP).button("🤝") is None
+    assert h.last(OP).button(f"🤝 {cid}") is None
+
+
+async def test_requests_list_for_both_sides(h):
+    n, cid = await _setup_request(h)
+    await h.say(OP, "📝 My confessions")
+    assert h.last(OP).button("Requests")
+    await h.press(OP, "Requests")
+    lst = h.last(OP)
+    assert f"#{n}" in lst.text and "waiting" in lst.text and lst.button("Withdraw")
+    await h.say(A, f"/start c_{n}")
+    assert h.last(A).button("Requests")
+    await h.press(A, "Requests")
+    assert h.last(A).button("Share my contact") and h.last(A).button("Decline")
 
 
 async def test_connect_expiry(h):
-    n = await _post_one(h)
-    await _comment(h, A, n, "a comment")
-    cid = db.scalar("SELECT id FROM comments")
-    await h.say(OP, f"/start c_{n}")
-    await h.press(OP, f"🤝 {cid}")
+    n, cid = await _setup_request(h)
+    ask = h.last(A)
     db.execute("UPDATE connect_requests SET created=created-10000000")
     expire_connects(db.now())
     assert db.scalar("SELECT status FROM connect_requests") == "expired"
-    ask = [c for c in h.tg.sent_to(A) if "would like to connect" in c.text][-1]
     await h.press(A, "Share my contact", message=ask)
     assert db.scalar("SELECT status FROM connect_requests") == "expired"
