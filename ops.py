@@ -238,6 +238,8 @@ def humanize_age(now: int, ts: int) -> str:
     if not ts:
         return "never"
     d = max(0, now - ts)
+    if d < 90:
+        return "just now"
     if d < 3600:
         return f"{d // 60} min ago"
     if d < 86400:

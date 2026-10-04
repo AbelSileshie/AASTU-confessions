@@ -5,7 +5,7 @@ from telegram import MenuButtonCommands, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-from common import dispatch_nav, pending_get, ensure_user, is_private_chat, kb, lang_of, main_menu, nav_action, nav_keyboard, nav_regex, send_home, show_help, show_home, show_lang, show_mine, show_rules
+from common import dispatch_nav, pending_get, ensure_user, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, send_home, show_help, show_home, show_lang, show_mine, show_rules
 import db
 from config import cfg
 from i18n import SUPPORTED, t
@@ -31,7 +31,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if is_private_chat(update):
-        await show_help(update.message, lang_of(update))
+        await show_help(update.message, context, lang_of(update))
 
 
 async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -61,7 +61,7 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif what == "browse":
         await dispatch_nav(q.message, context, lang, "browse")
     elif what == "help":
-        await show_help(q.message, lang)
+        await show_help(q.message, context, lang)
     elif what == "mine":
         await show_mine(q.message, lang, author_hash(update.effective_user.id))
 
@@ -76,7 +76,6 @@ async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     author = ensure_user(update.effective_user.id)
     db.execute("UPDATE users SET lang=? WHERE author=?", (code, author))
     await q.message.reply_text(t(code, "lang.set"), reply_markup=nav_keyboard(code, update.effective_user.id))
-    await q.message.reply_text(t(code, "nav.hub"), reply_markup=main_menu(code))
 
 
 async def nav_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -114,7 +113,7 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if is_private_chat(update):
-        await show_help(update.message, lang_of(update))
+        await show_help(update.message, context, lang_of(update))
 
 
 async def set_menu_button(app: Application) -> None:

@@ -48,7 +48,7 @@ async def test_my_confessions_shows_every_status(h):
     await h.say(S, "📝 My confessions")
     mine = h.last(S)
     assert f"Live as #{n}" in mine.text and "Waiting for review" in mine.text and "Not approved — spam" in mine.text
-    assert mine.button(f"💬 #{n}") and mine.button(f"Delete #{n}")
+    assert mine.button(f"Comments on #{n}") and mine.button(f"Delete #{n}")
     await h.press(S, f"Delete #{n}")
     assert "Delete #" in h.last(S).text and h.last(S).button("Yes, delete")
     await h.press(S, "Yes, delete")

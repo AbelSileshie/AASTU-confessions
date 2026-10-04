@@ -39,12 +39,11 @@ async def _post_one(h):
 
 async def test_start_sets_persistent_keyboard_and_hub(h):
     await h.say(S, "/start")
-    welcome, hub = h.tg.sent_to(S)[-2:]
+    welcome = h.last(S)
     labels = welcome.reply_labels()
     assert {"✍️ Confess", "📝 My confessions", "📢 Advertise", "📜 Rules", "❓ Help", "🌐 Language"} <= set(labels)
     assert "💬 Browse recent" not in labels  # students never list other people's posts
     assert welcome.markup["is_persistent"] is True
-    assert hub.button("Confess")
 
 
 async def test_bottom_labels_route_everywhere(h):
@@ -84,8 +83,8 @@ async def test_every_prompt_in_submit_flow_has_exits(h):
     assert "Too short" in err.text and err.button("Cancel")
     await h.say(S, CONFESSION)
     preview = h.last(S)
-    assert preview.button("Submit") and preview.button("Edit") and preview.button("Cancel") and preview.button("🏷")
-    await h.press(S, "🏷")  # change category from preview
+    assert preview.button("Submit") and preview.button("Edit") and preview.button("Cancel") and preview.button("Change category")
+    await h.press(S, "Change category")  # from preview
     assert h.last(S).button("Funny")
     await h.press(S, "Funny")
     assert "Preview" in h.last(S).text and "#Funny" in h.last(S).text  # text kept, category changed

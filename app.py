@@ -87,8 +87,9 @@ COMMANDS = [
 
 async def post_init(app: Application) -> None:
     from common import channel_info, ensure_topics
+    from modules.setup import apply_overrides, startup_check
 
-    env = app.bot_data["env"]
+    app.bot_data["env"] = env = apply_overrides(app.bot_data["env"])
     for attempt in range(3):
         try:
             me = await app.bot.get_me()
@@ -100,6 +101,7 @@ async def post_init(app: Application) -> None:
     info = await channel_info(ctx, force=True)
     app.bot_data["channel_private"] = not info.get("username")
     await ensure_topics(ctx, actor=env.owner_id)
+    await startup_check(app)
     await app.bot.set_my_commands(COMMANDS)
     from modules.core import set_menu_button
 
@@ -125,7 +127,18 @@ def build() -> tuple[Application, object]:
     return app, env
 
 
-async def run_webhook(app: Application, env) -> None:
+def _stop_event() -> asyncio.Event:
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):
+            pass
+    return stop
+
+
+async def run_webhook(app: Application, env, stop: asyncio.Event | None = None) -> None:
     web_app = build_app(env, app, verify_handler=handle_verify_webhook)
     runner = await start_server(web_app, env.listen_host, env.listen_port)
     async with app:
@@ -135,16 +148,13 @@ async def run_webhook(app: Application, env) -> None:
             allowed_updates=["message", "callback_query", "my_chat_member"], drop_pending_updates=False,
         )
         await app.start()
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
+        stop = stop or _stop_event()
         await stop.wait()
         await app.stop()
     await runner.cleanup()
 
 
-async def run_polling(app: Application, env) -> None:
+async def run_polling(app: Application, env, stop: asyncio.Event | None = None) -> None:
     """Polling for Telegram; aiohttp still serves /healthz and /webhooks/verify."""
     web_app = build_app(env, app, verify_handler=handle_verify_webhook)
     runner = await start_server(web_app, env.listen_host, env.listen_port)
@@ -153,10 +163,7 @@ async def run_polling(app: Application, env) -> None:
         await app.bot.delete_webhook(drop_pending_updates=False)
         await app.start()
         await app.updater.start_polling(allowed_updates=["message", "callback_query", "my_chat_member"])
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
+        stop = stop or _stop_event()
         await stop.wait()
         await app.updater.stop()
         await app.stop()

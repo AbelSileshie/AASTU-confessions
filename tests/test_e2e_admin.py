@@ -57,7 +57,7 @@ async def test_flagged_publishes_with_notice_and_one_tap_takedown(h):
     assert db.scalar("SELECT count(*) FROM posts") == 1
     notice = _group_cards(h)[-1]
     assert notice.params.get("message_thread_id") == 77 and "Flagged post is live · #1" in notice.text and "Mod Mary" in notice.text
-    assert notice.button("Take down") and notice.button("Fine")
+    assert notice.button("Take down") and notice.button("Leave it up")
     await h.press(ADMIN, "Take down", message=notice, chat_id=ADMIN_GROUP)
     assert db.scalar("SELECT deleted FROM posts WHERE number=1") == 1
     # moderator who approved is told
@@ -73,7 +73,7 @@ async def test_flagged_notice_fine_button_closes_card(h):
     await h.press(MOD, "Approve")
     await h.run_job(poster_job)
     notice = _group_cards(h)[-1]
-    await h.press(ADMIN, "Fine", message=notice, chat_id=ADMIN_GROUP)
+    await h.press(ADMIN, "Leave it up", message=notice, chat_id=ADMIN_GROUP)
     edited = [c for c in h.tg.calls if c.method == "editMessageText" and c.message_id == notice.message_id][-1]
     assert "left up" in edited.text and edited.markup is None
     assert db.scalar("SELECT deleted FROM posts WHERE number=1") == 0
@@ -210,12 +210,12 @@ async def test_topics_disabled_warns_owner_once_and_falls_back(h):
 async def test_staff_keyboard_row_by_role(h):
     await _two_stage(h)
     await h.say(MOD, "/start")
-    labels = h.tg.sent_to(MOD)[-2].reply_labels()
+    labels = h.tg.sent_to(MOD)[-1].reply_labels()
     assert "📋 Queue" in labels and "📊 Stats" in labels and "⚙️ Admin" not in labels
     await h.say(ADMIN, "/start")
-    assert "⚙️ Admin" in h.tg.sent_to(ADMIN)[-2].reply_labels()
+    assert "⚙️ Admin" in h.tg.sent_to(ADMIN)[-1].reply_labels()
     await h.say(S, "/start")
-    assert "📋 Queue" not in h.tg.sent_to(S)[-2].reply_labels()
+    assert "📋 Queue" not in h.tg.sent_to(S)[-1].reply_labels()
     await h.say(MOD, "📋 Queue")
     assert "Queue is empty" in h.last(MOD).text
     await h.say(MOD, "⚙️ Admin")
@@ -274,7 +274,7 @@ async def test_admin_hub_catalog_and_wordlist(h):
     await h.say(ADMIN, "foo, bar\nbaz")
     assert db.scalar("SELECT count(*) FROM wordlist WHERE kind='block' AND word IN ('foo','bar','baz')") == 3
     await h.press(ADMIN, "Back")
-    await h.press(ADMIN, "✖️ foo")
+    await h.press(ADMIN, "Remove “foo”")
     assert db.scalar("SELECT count(*) FROM wordlist WHERE word='foo'") == 0
 
 

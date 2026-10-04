@@ -180,15 +180,6 @@ def kb(rows: Iterable[Sequence[tuple[str, str] | tuple[str, str, str]]]) -> Inli
     return InlineKeyboardMarkup(out)
 
 
-def main_menu(lang: str, show_ads: bool = True) -> InlineKeyboardMarkup:
-    rows = [[(t(lang, "menu.confess"), "menu", "confess"), (t(lang, "menu.mine"), "menu", "mine")]]
-    second = [(t(lang, "menu.rules"), "menu", "rules"), (t(lang, "menu.lang"), "menu", "lang")]
-    if show_ads and cfg("ads_enabled", True):
-        second.insert(0, (t(lang, "menu.advertise"), "menu", "advertise"))
-    rows.append(second)
-    return kb(rows)
-
-
 # ---------------------------------------------------------------------------
 # Navigation: persistent bottom keyboard + in-flow exits
 # ---------------------------------------------------------------------------
@@ -279,7 +270,7 @@ def rules_markup(lang: str) -> InlineKeyboardMarkup:
 
 def lang_markup() -> InlineKeyboardMarkup:
     labels = {"en": "English", "am": "አማርኛ"}
-    return kb([[(labels[code], "lang", code) for code in SUPPORTED], [("⬅️", "menu", "home")]])
+    return kb([[(labels[code], "lang", code) for code in SUPPORTED], [(t("en", "menu.back"), "menu", "home")]])
 
 
 def render_setting_text(value: str):
@@ -304,9 +295,18 @@ def normalize_newlines(value: str) -> str:
 
 
 async def show_home(message, lang: str) -> None:
-    text, ents = render_setting_text(cfg("welcome_text", ""))
+    from fmt import Rich
+
+    value = normalize_newlines(cfg("welcome_text", ""))
+    first, _, rest = value.partition("\n")
+    r = Rich().bold(first)
+    if rest:
+        r.nl().text(rest)
+    role = role_of(message.chat_id)
+    if role in ("moderator", "admin", "owner"):
+        r.nl(2).italic(t(lang, f"nav.staff_hint_{'admin' if role != 'moderator' else 'moderator'}"))
+    text, ents = r.build()
     await message.reply_text(text, entities=ents, reply_markup=nav_keyboard(lang, message.chat_id))
-    await message.reply_text(t(lang, "nav.hub"), reply_markup=main_menu(lang))
 
 
 async def show_rules(message, lang: str) -> None:
@@ -314,9 +314,18 @@ async def show_rules(message, lang: str) -> None:
     await message.reply_text(text, entities=ents, reply_markup=rules_markup(lang))
 
 
-async def show_help(message, lang: str) -> None:
-    text, ents = render_setting_text(t(lang, "help"))
-    await message.reply_text(text, entities=ents, reply_markup=nav_keyboard(lang, message.chat_id))
+async def show_help(message, context, lang: str) -> None:
+    from fmt import Rich
+
+    value = t(lang, "help")
+    first, _, rest = value.partition("\n")
+    r = Rich().bold(first).nl().text(rest)
+    info = context.bot_data.get("channel_info") or {}
+    url = f"https://t.me/{info['username']}" if info.get("username") else (info.get("invite_link") or "")
+    if url.startswith("https://"):
+        r.nl(2).link(t(lang, "help.open_channel"), url)
+    text, ents = r.build()
+    await message.reply_text(text, entities=ents, reply_markup=nav_keyboard(lang, message.chat_id), disable_web_page_preview=True)
 
 
 async def show_lang(message) -> None:
@@ -326,13 +335,13 @@ async def show_lang(message) -> None:
 def my_confessions(author: str, limit: int = 5) -> list[dict]:
     """Status of the author's recent confessions across pending / live / declined (pure given DB)."""
     rows: list[dict] = []
-    for r in db.q("SELECT id, created FROM submissions WHERE author=? ORDER BY id DESC LIMIT ?", (author, limit)):
-        rows.append({"status": "pending", "ts": r["created"], "number": None})
+    for r in db.q("SELECT id, created, text FROM submissions WHERE author=? ORDER BY id DESC LIMIT ?", (author, limit)):
+        rows.append({"status": "pending", "ts": r["created"], "number": None, "snippet": r["text"]})
     for r in db.q("SELECT number, posted_at, comment_count, deleted FROM posts WHERE author=? AND kind='confession' ORDER BY number DESC LIMIT ?",
                   (author, limit)):
         rows.append({"status": "deleted" if r["deleted"] else "live", "ts": r["posted_at"], "number": r["number"], "count": r["comment_count"]})
-    for r in db.q("SELECT created, reason FROM declined WHERE author=? ORDER BY id DESC LIMIT ?", (author, limit)):
-        rows.append({"status": "declined", "ts": r["created"], "number": None, "reason": r["reason"] or "other"})
+    for r in db.q("SELECT created, reason, text FROM declined WHERE author=? ORDER BY id DESC LIMIT ?", (author, limit)):
+        rows.append({"status": "declined", "ts": r["created"], "number": None, "reason": r["reason"] or "other", "snippet": r["text"]})
     rows.sort(key=lambda x: x["ts"] or 0, reverse=True)
     return rows[:limit]
 
@@ -355,6 +364,9 @@ async def show_mine(message, lang: str, author: str) -> None:
             r.text(t(lang, "mine.declined", reason=t(lang, "reject." + it["reason"])))
         else:
             r.text(t(lang, f"mine.{it['status']}"))
+        if it.get("snippet"):
+            snippet = it["snippet"].replace("\n", " ")
+            r.nl().italic("   “" + (snippet[:48] + "…" if len(snippet) > 48 else snippet) + "”")
     if db.one("SELECT 1 FROM connect_requests WHERE (requester=? OR target=?) AND status IN ('pending','accepted','revealed')", (author, author)):
         buttons.append([(t(lang, "connect.btn_list"), "cn", "list")])
     buttons.append([(t(lang, "menu.back"), "menu", "home")])
@@ -370,7 +382,7 @@ async def dispatch_nav(message, context: ContextTypes.DEFAULT_TYPE, lang: str, a
     elif action == "rules":
         await show_rules(message, lang)
     elif action == "help":
-        await show_help(message, lang)
+        await show_help(message, context, lang)
     elif action == "lang":
         await show_lang(message)
     elif action == "cancel":

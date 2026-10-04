@@ -152,7 +152,7 @@ async def _post_confession(context, item: dict, now: int) -> None:
                              item["text"], body_limit=400)
                         .nl(2).link("Open post ↗", post_link(context, msg.message_id)).build())
         await alert_admins(context, ftext, kind="flagged", entities=fents, disable_web_page_preview=True,
-                           reply_markup=kb([[("🛑 Take down", "td", f"go:{number}"), ("✅ Fine", "td", f"ignore:{number}")]]))
+                           reply_markup=kb([[("🛑 Take down", "td", f"go:{number}"), ("✅ Leave it up", "td", f"ignore:{number}")]]))
 
 
 async def _post_ad(context, item: dict, now: int) -> None:

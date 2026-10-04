@@ -8,6 +8,7 @@ MODULES = (
     "modules.comments",
     "modules.staff",
     "modules.admin",
+    "modules.setup",
     "modules.settings",
     "modules.catalog",
     "modules.wordlist",

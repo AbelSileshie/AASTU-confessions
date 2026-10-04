@@ -58,15 +58,20 @@ def render_thread(number: int, rows: list[dict], lang: str, viewer_is_op: bool, 
     rich = Rich().bold(t(lang, "comments.title", number=number, count=count))
     if not rows:
         rich.nl(2).italic(t(lang, "comments.empty"))
+    alias_of = {r["id"]: r["alias"] for r in rows}
     for r in rows:
-        reply = f" ↩︎ #{r['reply_to']}" if r["reply_to"] else ""
-        rich.nl(2).bold(r["alias"]).text(f" · #{r['id']}{reply}").nl().quote(r["text"])
+        reply = ""
+        if r["reply_to"]:
+            target = alias_of.get(r["reply_to"]) or db.scalar("SELECT alias FROM comments WHERE id=?", (r["reply_to"],), "…")
+            reply = f" ↩︎ {target}"
+        rich.nl(2).bold(r["alias"]).text(reply).nl().quote(r["text"])
     buttons = [[(t(lang, "comments.write"), "cm", f"w:{number}")]]
     per_comment = []
     for r in rows[-5:]:
-        row = [(f"↩️ {r['id']}", "cm", f"w:{number}:{r['id']}"), (f"🚩 {r['id']}", "cm", f"rep:{r['id']}")]
+        who = r["alias"][:14]
+        row = [(t(lang, "comments.btn_reply", who=who), "cm", f"w:{number}:{r['id']}"), (t(lang, "comments.btn_report", who=who), "cm", f"rep:{r['id']}")]
         if viewer_is_op and r["alias"] != "OP" and cfg("connect_enabled", True):
-            row.append((f"🤝 {r['id']}", "cn", f"ask:{r['id']}"))
+            row.append((t(lang, "connect.btn_ask", who=who), "cn", f"ask:{r['id']}"))
         per_comment.append(row)
     nav = []
     if viewer_has_connects:

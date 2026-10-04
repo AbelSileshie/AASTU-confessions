@@ -69,13 +69,13 @@ async def test_reports_hide_comment_and_alert_admins(h):
     cid = db.scalar("SELECT id FROM comments")
     for uid in (B, C):
         await h.say(uid, f"/start c_{n}")
-        await h.press(uid, f"🚩 {cid}")
+        await h.press(uid, "Report Anon 1")
     # same reporter twice does not count
     await h.say(B, f"/start c_{n}")
-    await h.press(B, f"🚩 {cid}")
+    await h.press(B, "Report Anon 1")
     assert db.scalar("SELECT hidden FROM comments WHERE id=?", (cid,)) == 0
     await h.say(OP, f"/start c_{n}")
-    await h.press(OP, f"🚩 {cid}")
+    await h.press(OP, "Report Anon 1")
     assert db.scalar("SELECT hidden FROM comments WHERE id=?", (cid,)) == 1
     assert db.scalar("SELECT comment_count FROM posts WHERE number=?", (n,)) == 0
     alert = h.last(ADMIN_GROUP)
@@ -103,10 +103,10 @@ async def _setup_request(h):
     await _comment(h, A, n, "I know exactly what you mean")
     cid = db.scalar("SELECT id FROM comments")
     await h.say(OP, f"/start c_{n}")
-    assert h.last(OP).button(f"🤝 {cid}")
+    assert h.last(OP).button("Ask Anon 1 for contact")
     await h.say(B, f"/start c_{n}")
-    assert h.last(B).button("🤝") is None  # non-OP never sees Connect
-    await h.press(OP, f"🤝 {cid}")
+    assert h.last(B).button("for contact") is None  # non-OP never sees Connect
+    await h.press(OP, "Ask Anon 1 for contact")
     return n, cid
 
 
@@ -207,19 +207,19 @@ async def test_connect_forgery_and_wrong_actor(h):
     assert db.scalar("SELECT status FROM connect_requests") == "pending"
     h.set("connect_enabled", 0)
     await h.say(OP, f"/start c_{n}")
-    assert h.last(OP).button(f"🤝 {cid}") is None
+    assert h.last(OP).button("for contact") is None
 
 
 async def test_requests_list_for_both_sides(h):
     n, cid = await _setup_request(h)
     await h.say(OP, "📝 My confessions")
-    assert h.last(OP).button("Requests")
-    await h.press(OP, "Requests")
+    assert h.last(OP).button("Contact requests")
+    await h.press(OP, "Contact requests")
     lst = h.last(OP)
     assert f"#{n}" in lst.text and "waiting" in lst.text and lst.button("Withdraw")
     await h.say(A, f"/start c_{n}")
-    assert h.last(A).button("Requests")
-    await h.press(A, "Requests")
+    assert h.last(A).button("Contact requests")
+    await h.press(A, "Contact requests")
     assert h.last(A).button("Share my contact") and h.last(A).button("Decline")
 
 

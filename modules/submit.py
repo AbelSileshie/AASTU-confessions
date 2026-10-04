@@ -125,7 +125,7 @@ async def _show_preview(message, context, lang: str) -> int:
         text, entities=ents,
         reply_markup=kb([
             [(t(lang, "submit.btn_submit"), "sub", "go")],
-            [(t(lang, "submit.btn_edit"), "sub", "edit"), ("🏷 " + cat["label"], "sub", "back_cat")],
+            [(t(lang, "submit.btn_edit"), "sub", "edit"), (t(lang, "submit.btn_category", label=cat["label"]), "sub", "back_cat")],
             [(t(lang, "menu.cancel"), "sub", "cancel")],
         ]),
     )

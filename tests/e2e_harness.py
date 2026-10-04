@@ -144,8 +144,7 @@ class Harness:
         config.invalidate(key)
 
     async def submit_confession(self, uid: int, text: str, category_label: str = "Campus") -> None:
-        await self.say(uid, "/start")
-        await self.press(uid, "Confess")
+        await self.say(uid, "✍️ Confess")
         await self.press(uid, category_label)
         await self.say(uid, text)
         await self.press(uid, "Submit")

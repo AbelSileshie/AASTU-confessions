@@ -187,7 +187,7 @@ async def test_set_keeps_newlines_and_shows_preview(h):
     msgs = h.tg.sent_to(OWNER)
     assert "saved. Preview" in msgs[-2].text and msgs[-1].text == "👋 Hello\n\nLine two\nLine three"
     await h.say(S, "/start")
-    assert h.tg.sent_to(S)[-2].text.startswith("👋 Hello\n\nLine two")
+    assert h.last(S).text.startswith("👋 Hello\n\nLine two")
 
 
 async def test_settings_menu_shows_current_text_as_quote(h):

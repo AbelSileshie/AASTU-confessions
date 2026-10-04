@@ -153,7 +153,7 @@ async def test_comment_report_requires_distinct_users(h):
     await h.say(ATTACKER, "victim comment")
     cid = db.scalar("SELECT id FROM comments")
     await h.say(STUDENT, "/start c_1")
-    rep = h.last(STUDENT).callback(f"🚩 {cid}")
+    rep = h.last(STUDENT).callback("Report Anon 1")
     h.set("report_cooldown_sec", 0)
     for _ in range(10):
         await h.app.process_update(callback_update(h.bot, STUDENT, rep, h.last(STUDENT)))
@@ -180,8 +180,7 @@ async def test_sql_and_markup_injection_is_stored_and_rendered_literally(h):
 
 
 async def test_unicode_evasion_of_filters(h):
-    await h.say(STUDENT, "/start")
-    await h.press(STUDENT, "Confess")
+    await h.say(STUDENT, "✍️ Confess")
     await h.press(STUDENT, "Rant")
     for evasive in (
         "call me on 09\u200b11\u200b22\u200b33\u200b44 tonight please ok",          # zero-width in phone
@@ -195,8 +194,7 @@ async def test_unicode_evasion_of_filters(h):
 
 
 async def test_oversized_inputs_rejected_not_crash(h):
-    await h.say(STUDENT, "/start")
-    await h.press(STUDENT, "Confess")
+    await h.say(STUDENT, "✍️ Confess")
     await h.press(STUDENT, "Rant")
     await h.say(STUDENT, "x" * 4096)
     assert "Too long" in h.last(STUDENT).text

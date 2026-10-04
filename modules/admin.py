@@ -50,6 +50,7 @@ def home_screen(uid: int):
         [("🏷 Categories", "hub", "cats"), ("📦 Packages", "hub", "pkgs")],
         [("🚫 Wordlist", "hub", "words"), ("💰 Ads", "hub", "ads")],
         [("💬 Group setup", "hub", "group"), ("🩺 Health", "hub", "health")],
+        [("🧭 Setup checklist", "setup", "check")],
     ]
     if owner:
         rows.insert(2, [("🏦 Payout accounts", "hub", "pay")])
@@ -98,7 +99,7 @@ def cat_screen(cid: int):
     if not r:
         return "Gone.", kb([[("⬅️ Back", "hub", "cats")]])
     rows = [[("✏️ Label", "hub", f"cat:{cid}:set:label"), ("#️⃣ Hashtag", "hub", f"cat:{cid}:set:hashtag")],
-            [("⬆️", "hub", f"cat:{cid}:up"), ("⬇️", "hub", f"cat:{cid}:down"),
+            [("⬆️ Move up", "hub", f"cat:{cid}:up"), ("⬇️ Move down", "hub", f"cat:{cid}:down"),
              ("⬜ Disable" if r["enabled"] else "✅ Enable", "hub", f"cat:{cid}:toggle")],
             [("⬅️ Back", "hub", "cats")]]
     return f"{r['label']} {r['hashtag']} · {'enabled' if r['enabled'] else 'disabled'}", kb(rows)
@@ -117,7 +118,7 @@ def pkg_screen(pid: int):
         return "Gone.", kb([[("⬅️ Back", "hub", "pkgs")]])
     rows = [[("💵 Price", "hub", f"pkg:{pid}:set:price_etb"), ("🔁 Posts", "hub", f"pkg:{pid}:set:posts"), ("📌 Pin hours", "hub", f"pkg:{pid}:set:pin_hours")],
             [("✏️ Name", "hub", f"pkg:{pid}:set:name"), ("📝 Description", "hub", f"pkg:{pid}:set:description"), ("🔤 Max chars", "hub", f"pkg:{pid}:set:max_chars")],
-            [("⬆️", "hub", f"pkg:{pid}:up"), ("⬇️", "hub", f"pkg:{pid}:down"),
+            [("⬆️ Move up", "hub", f"pkg:{pid}:up"), ("⬇️ Move down", "hub", f"pkg:{pid}:down"),
              ("⬜ Disable" if r["enabled"] else "✅ Enable", "hub", f"pkg:{pid}:toggle")],
             [("⬅️ Back", "hub", "pkgs")]]
     text = (f"{r['name']} · {r['price_etb']} ETB · {'enabled' if r['enabled'] else 'disabled'}\n"
@@ -136,7 +137,7 @@ def words_screen(kind: str):
     items = words(kind)
     rows, row = [], []
     for w in items[:40]:
-        row.append((f"✖️ {w['word']}", "hub", f"word:{w['id']}:del:{kind}"))
+        row.append((f"Remove “{w['word'][:18]}”", "hub", f"word:{w['id']}:del:{kind}"))
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -145,7 +146,7 @@ def words_screen(kind: str):
     other = "risk" if kind == "block" else "block"
     rows.append([("➕ Add", "hub", f"word:add:{kind}"), (f"→ {other} list", "hub", f"words:{other}"), BACK])
     title = "🚫 Block list (rejected automatically)" if kind == "block" else "⚠️ Risk list (highlighted for review)"
-    return f"{title} · {len(items)} words — tap to remove", kb(rows)
+    return f"{title} · {len(items)} words", kb(rows)
 
 
 def group_screen():

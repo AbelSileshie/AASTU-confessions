@@ -20,10 +20,9 @@ CONFESSION = "I have been secretly leaving snacks in the library for whoever stu
 
 async def test_start_shows_menu_and_no_raw_id_stored(h):
     await h.say(STUDENT, "/start")
-    welcome, hub = h.tg.sent_to(STUDENT)[-2:]
+    welcome = h.last(STUDENT)
     assert "anonymous" in welcome.text.lower()
     assert "✍️ Confess" in welcome.reply_labels() and "📜 Rules" in welcome.reply_labels()  # persistent keyboard
-    assert hub.button("Confess") and hub.button("Advertise") and hub.button("Rules")
     rows = db.q("SELECT * FROM users")
     assert len(rows) == 1 and rows[0]["author"] == author_hash(STUDENT)
     dump = " ".join(str(dict(r)) for r in rows)
@@ -71,8 +70,7 @@ async def test_full_confession_lifecycle(h):
 
 
 async def test_submission_checks_in_order(h):
-    await h.say(STUDENT, "/start")
-    await h.press(STUDENT, "Confess")
+    await h.say(STUDENT, "✍️ Confess")
     await h.press(STUDENT, "Rant")
     await h.say(STUDENT, "too short")
     assert "Too short" in h.last(STUDENT).text
