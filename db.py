@@ -127,11 +127,8 @@ def migrate() -> list[str]:
         # (which would re-run ALTER TABLE on the next start). path.name is regex-validated: no quotes possible.
         c = conn()
         try:
-            c.executescript(  # nosec B608 - name matches ^\d{4}_[a-z0-9_]+\.sql$
-                "BEGIN;\n" + sql + "\n"
-                f"INSERT INTO schema_migrations(name, applied_at) VALUES ('{path.name}', {now()});\n"
-                "COMMIT;"
-            )
+            record = f"INSERT INTO schema_migrations(name, applied_at) VALUES ('{path.name}', {now()});"  # nosec B608 - regex-validated name
+            c.executescript("BEGIN;\n" + sql + "\n" + record + "\nCOMMIT;")
         except sqlite3.Error:
             if c.in_transaction:
                 c.execute("ROLLBACK")
