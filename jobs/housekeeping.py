@@ -27,15 +27,11 @@ def release_stale_claims(now: int) -> int:
                       (cutoff,))
 
 
-def expire_submissions(now: int) -> list[str]:
+def expire_submissions(now: int) -> int:
     ttl = cfg("submission_ttl_hours", 0)
     if not ttl:
-        return []
-    rows = db.q("SELECT id, author FROM submissions WHERE created<? AND claimed_by IS NULL", (now - ttl * 3600,))
-    if rows:
-        placeholders = ",".join("?" * len(rows))
-        db.execute(f"DELETE FROM submissions WHERE id IN ({placeholders})", [r["id"] for r in rows])  # nosec B608 - placeholders only
-    return [r["author"] for r in rows]
+        return 0
+    return db.execute("DELETE FROM submissions WHERE created<? AND claimed_by IS NULL", (now - ttl * 3600,))
 
 
 def expire_invites(now: int) -> None:

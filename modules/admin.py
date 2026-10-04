@@ -80,7 +80,7 @@ def person_screen(uid: int, target: int):
     rows = [actions] if actions else []
     rows.append([("🗑️ Remove", "hub", f"staff:{target}:remove"), ("📜 Audit", "hub", f"staff:{target}:audit")])
     rows.append([("⬅️ Back", "hub", "staff")])
-    decisions = db.scalar("SELECT count(*) FROM audit WHERE actor=? AND action IN ('approve','reject','final_post') AND at>?",
+    decisions = db.scalar("SELECT count(*) FROM audit WHERE actor=? AND action IN ('approve','reject') AND at>?",
                           (target, db.now() - 7 * 86400), 0)
     text, ents = (Rich().bold(f"{'👑' if row['role']=='admin' else '🛡'} {staff_name(target)}").text(f" · {row['role']}").nl()
                   .label("Decisions (7d)", str(decisions)).text("   ").label("Shift", "🟢 on" if row["on_shift"] else "off").build())

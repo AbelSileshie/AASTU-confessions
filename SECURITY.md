@@ -1,6 +1,6 @@
 # Security model
 
-Last audited: see git log for the latest `security:` commit. Automated gates: `pytest` (196),
+Last audited: independent code review (see git log `review:` commit) — findings S1–S16 addressed or documented. Automated gates: `pytest` (250),
 `bandit`, `ruff`, `vulture`, `pip-audit` — all clean.
 
 ## Assets and who may touch them
@@ -18,9 +18,9 @@ Last audited: see git log for the latest `security:` commit. Automated gates: `p
 
 | Boundary | Check |
 |---|---|
-| Telegram → `POST {WEBHOOK_PATH}` | Random path + `X-Telegram-Bot-Api-Secret-Token` (constant-time), 1 MB cap, malformed → 400. |
+| Telegram → `POST {WEBHOOK_PATH}` | Random path + `X-Telegram-Bot-Api-Secret-Token` (constant-time), **fails closed** when no secret is set; `load_env` refuses to start in webhook mode without a ≥32-char secret, a random path and an https `PUBLIC_URL`. 1 MB cap, malformed → 400. |
 | Verify.et → `POST /webhooks/verify` | `HMAC(secret, "{ts}.{body}")` vs `X-Webhook-Signature` (all values, constant-time), ±5 min window, **fails closed when no secret is configured**, idempotent on `X-Webhook-Delivery-Id`, only acts on a `payments.request_id` we created and that is still `queued`. |
-| Bot → Verify.et | `x-api-key`, `Idempotency-Key = ad-{ad}-{payment}`, per-bank request validation, retry with backoff on 429/503, 402 → manual review + owner alert. |
+| Bot → Verify.et | `x-api-key`, `Idempotency-Key = ad-{ad}-{payment}`, per-bank request validation, bounded retry (30 s / 2 m / 8 m, one job per round) then manual review, 402 → manual review + owner alert. Receiver-name fallback is script-agnostic (NFKC + casefold) and an empty normalised name never matches. Attempt cap applies before a credit is spent; `apply_result` is idempotent between webhook and poll. |
 | Reverse proxy | Caddy forwards only `/tg/*`, `/webhooks/*`, `/healthz`; everything else 200 "ok". App binds `127.0.0.1`. |
 | Inline buttons | `callback_data = "{action}:{payload}:{hmac12}"`; forged/retargeted payloads are rejected before any handler logic. |
 | Roles | `@require(role)` on every staff handler; unknown callers get silence. Owner from `OWNER_ID`; admins may create moderators; only the owner creates admins or touches payout accounts. Invite links: 24 h, single use, never demote. |
@@ -49,7 +49,7 @@ step that needs an action is a new message; earlier cards only lose their button
 
 ## Chat assignment (setup)
 
-`my_chat_member` updates only *offer* a chat to the owner; assignment requires an owner-signed callback. Chosen ids
+`my_chat_member` updates only *offer* a chat to the owner (once per chat per day); assignment requires an owner-signed callback **and** the owner must be an admin of that chat (checked live via `get_chat_member`). Chosen ids
 live in `settings` (`chat_*`) and override `.env`. Reassigning the admin group resets topic ids; reassigning the
 channel clears the cached channel info.
 

@@ -81,7 +81,9 @@ def scalar(sql: str, params: Iterable[Any] = (), default: Any = None) -> Any:
 def execute(sql: str, params: Iterable[Any] = ()) -> int:
     """Run a write statement; return lastrowid (or rowcount for UPDATE/DELETE)."""
     cur = conn().execute(sql, tuple(params))
-    return cur.lastrowid if cur.lastrowid else cur.rowcount
+    if sql.lstrip()[:6].upper() == "INSERT":
+        return cur.lastrowid
+    return cur.rowcount
 
 
 @contextmanager
@@ -121,11 +123,19 @@ def migrate() -> list[str]:
         if path.name in applied:
             continue
         sql = path.read_text(encoding="utf-8")
+        # One script = one transaction, so a crash can never leave a migration applied but unrecorded
+        # (which would re-run ALTER TABLE on the next start). path.name is regex-validated: no quotes possible.
         c = conn()
-        # executescript() auto-commits any open transaction first, so wrap the
-        # migration body in its own BEGIN/COMMIT and record it with bound params.
-        c.executescript("BEGIN;\n" + sql + "\nCOMMIT;")
-        c.execute("INSERT INTO schema_migrations(name, applied_at) VALUES (?, ?)", (path.name, now()))
+        try:
+            c.executescript(  # nosec B608 - name matches ^\d{4}_[a-z0-9_]+\.sql$
+                "BEGIN;\n" + sql + "\n"
+                f"INSERT INTO schema_migrations(name, applied_at) VALUES ('{path.name}', {now()});\n"
+                "COMMIT;"
+            )
+        except sqlite3.Error:
+            if c.in_transaction:
+                c.execute("ROLLBACK")
+            raise
         done.append(path.name)
     return done
 

@@ -354,25 +354,21 @@ async def edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not editing:
         return
     kind, item_id = editing
-    if kind != "sub":
-        pending_clear(context, "editing")
-        return
     actor = update.effective_user.id
     new_text = strip_invisible(update.message.text or "").strip()
     result = check_text(new_text, min_len=cfg("min_len", 20), max_len=cfg("max_len", 2000), blocklist=[], risklist=[])
     if not result.ok:
         await update.message.reply_text(f"Edited text rejected: {result.reason}")
         return
-    if kind == "sub":
-        sub = _owned(str(item_id), actor)
-        if not sub:
-            pending_clear(context, "editing")
-            return
-        db.execute("UPDATE submissions SET text=? WHERE id=?", (new_text, item_id))
-        sub["text"] = new_text
+    sub = _owned(str(item_id), actor)
+    if not sub:
         pending_clear(context, "editing")
-        db.audit(actor, "edit", f"sub:{item_id}")
-        await _send_card(update.message, sub)
+        return
+    db.execute("UPDATE submissions SET text=? WHERE id=?", (new_text, item_id))
+    sub["text"] = new_text
+    pending_clear(context, "editing")
+    db.audit(actor, "edit", f"sub:{item_id}")
+    await _send_card(update.message, sub)
 @require("moderator")
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if pending_clear(context, "editing"):

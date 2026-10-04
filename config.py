@@ -67,16 +67,27 @@ def load_env(strict: bool = True) -> Env:
     webhook_path = _env("WEBHOOK_PATH", "/tg/dev")
     if not webhook_path.startswith("/"):
         raise RuntimeError("WEBHOOK_PATH must start with '/'")
+    tg_secret = _env("TG_WEBHOOK_SECRET", "")
+    owner_id = _env_int("OWNER_ID")
+    if strict and not owner_id:
+        raise RuntimeError("OWNER_ID is required (the owner bootstraps staff and receives setup messages)")
+    if strict and run_mode == "webhook":
+        if len(tg_secret) < 32:
+            raise RuntimeError("TG_WEBHOOK_SECRET (≥32 chars) is required in webhook mode")
+        if webhook_path == "/tg/dev" or len(webhook_path) < 12:
+            raise RuntimeError("WEBHOOK_PATH must be a random path like /tg/<32 hex> in webhook mode")
+        if not _env("PUBLIC_URL", "").startswith("https://"):
+            raise RuntimeError("PUBLIC_URL must be an https:// URL in webhook mode")
     return Env(
         bot_token=_env("BOT_TOKEN", required=strict),
-        owner_id=_env_int("OWNER_ID"),
+        owner_id=owner_id,
         channel_id=_env_int("CHANNEL_ID"),
         admin_group_id=_env_int("ADMIN_GROUP_ID"),
         backup_channel_id=_env_int("BACKUP_CHANNEL_ID"),
         run_mode=run_mode,
         public_url=_env("PUBLIC_URL", "").rstrip("/"),
         webhook_path=webhook_path,
-        tg_webhook_secret=_env("TG_WEBHOOK_SECRET", ""),
+        tg_webhook_secret=tg_secret,
         listen_host=host or "127.0.0.1",
         listen_port=int(port or 8081),
         hmac_secret=hmac_secret.encode(),

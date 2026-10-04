@@ -71,7 +71,7 @@ def test_submission_ttl(h):
     h.set("submission_ttl_hours", 1)
     db.execute("INSERT INTO submissions(author, text, text_hash, created) VALUES ('a','t','h1',?)", (db.now() - 7200,))
     db.execute("INSERT INTO submissions(author, text, text_hash, created) VALUES ('b','t','h2',?)", (db.now(),))
-    assert expire_submissions(db.now()) == ["a"]
+    assert expire_submissions(db.now()) == 1
     assert db.scalar("SELECT count(*) FROM submissions") == 1
 
 

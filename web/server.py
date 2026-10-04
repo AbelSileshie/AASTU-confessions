@@ -47,10 +47,10 @@ def verify_signature(secret: str, timestamp: str | None, raw_body: bytes, header
 
 async def telegram_webhook(request: web.Request) -> web.Response:
     env = request.app["env"]
-    if env.tg_webhook_secret and not hmac.compare_digest(
+    if not env.tg_webhook_secret or not hmac.compare_digest(
         request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), env.tg_webhook_secret
     ):
-        return web.Response(status=403)
+        return web.Response(status=403)  # fail closed: no secret configured → nothing accepted
     if request.content_length and request.content_length > MAX_BODY:
         return web.Response(status=413)
     try:

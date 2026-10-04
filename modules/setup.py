@@ -65,9 +65,14 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not env.owner_id:
         return
     chat = cm.chat
+    flag = f"offered_{chat.id}"
+    if (db.scalar("SELECT v FROM meta WHERE k=?", (flag,)) or 0) and db.now() - int(db.scalar("SELECT v FROM meta WHERE k=?", (flag,))) < 86400:
+        return  # one offer per chat per day
+    db.execute("INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (flag, str(db.now())))
     kind = "channel" if chat.type == "channel" else "group"
-    text = (f"➕ I was added to the {kind} “{chat.title}” as {status}.\n"
-            f"What should I use it for?")
+    title = (chat.title or "")[:64]
+    text = (f"➕ I was added to the {kind} “{title}” (id {chat.id}) as {status}.\n"
+            f"What should I use it for? Only chats you administer can be assigned.")
     options = [("channel", "backup")] if kind == "channel" else [("admin",)]
     rows = [[(ROLE_LABELS[r], "setup", f"assign:{r}:{chat.id}") for r in group] for group in options]
     rows.append([("Nothing", "setup", "ignore")])
@@ -89,6 +94,15 @@ async def setup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             chat_id = int(parts[2])
         except ValueError:
+            return
+        # the owner must actually administer that chat — stops social-engineering via look-alike titles
+        try:
+            member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
+            is_admin = member.status in ("creator", "administrator")
+        except TelegramError:
+            is_admin = False
+        if not is_admin:
+            await q.message.edit_text("❌ You are not an admin of that chat, so it can't be used.", reply_markup=None)
             return
         assign(context, parts[1], chat_id, update.effective_user.id)
         await q.message.edit_text(f"✅ Using this chat as {ROLE_LABELS[parts[1]]}.", reply_markup=kb([[("🧭 Setup checklist", "setup", "check")]]))

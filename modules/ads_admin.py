@@ -123,6 +123,7 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if paid:
                 transition(ad_id, "refund_due", actor, "auto")
             db.execute("DELETE FROM outbox WHERE kind='ad' AND ref_id=?", (ad_id,))
+            db.execute("DELETE FROM banners WHERE ad_id=?", (ad_id,))
             await q.answer("Rejected")
             await _notify_advertiser(context, ad_id, t("en", "ads.rejected", ad_id=ad_id, reason=reason))
             await _edit(q, f"❌ rejected ({reason}){' · refund due' if paid else ''}")

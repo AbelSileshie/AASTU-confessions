@@ -46,8 +46,7 @@ def setup_logging() -> None:
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log = logging.getLogger("app")
-    log.error("handler error: %s", type(context.error).__name__)
-    log.debug("handler traceback", exc_info=context.error)
+    log.error("handler error: %s", type(context.error).__name__, exc_info=context.error)
     if isinstance(update, Update) and update.callback_query:
         try:
             await update.callback_query.answer()

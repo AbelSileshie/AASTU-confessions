@@ -385,6 +385,11 @@ async def _submit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, la
         return ConversationHandler.END
     max_attempts = cfg("payment_max_attempts", 3)
     attempts = (ad["pay_attempts"] or 0) + 1
+    if attempts > max_attempts:  # cap applies to queued/invalid paths too, before spending a credit
+        db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (ad["id"],))
+        await alert_admins(context, f"🧾 Ad #{ad['id']}: too many payment attempts; manual review.", kind="ads")
+        await update.message.reply_text(t(lang, "ads.needs_review"), reply_markup=kb([[(t(lang, "ads.btn_contact"), "adc", str(ad["id"]))]]))
+        return ConversationHandler.END
     db.execute("UPDATE ads SET pay_attempts=? WHERE id=?", (attempts, ad["id"]))
     await update.message.reply_text(t(lang, "ads.verifying"))
     pid = record_payment(ad["id"], pay["bank"], pay["reference"], extra)

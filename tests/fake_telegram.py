@@ -64,6 +64,7 @@ class FakeRequest(BaseRequest):
         self.topics: list[str] = []
         self.group_is_forum = True
         self.user_usernames: dict[int, str] = {}
+        self.chat_admins: dict[int, set[int]] = {}  # chat_id → admin user ids (default: bot + owner)
 
     async def initialize(self) -> None:  # noqa: D401
         return None
@@ -143,6 +144,17 @@ class FakeRequest(BaseRequest):
             return self._ok("https://t.me/+InViTeLiNk123")
         if api == "getChatMemberCount":
             return self._ok(self.member_count)
+        if api == "getChatMember":
+            uid = _int(params.get("user_id"))
+            user = {"id": uid, "is_bot": uid == BOT_ID, "first_name": "Bot" if uid == BOT_ID else f"U{uid}"}
+            status = "administrator" if uid in self.chat_admins.get(chat_id, {BOT_ID, 1000}) else "member"
+            if status == "administrator":
+                return self._ok({"status": status, "user": user, "can_be_edited": False, "is_anonymous": False, "can_manage_chat": True,
+                                 "can_delete_messages": True, "can_manage_video_chats": False, "can_restrict_members": False,
+                                 "can_promote_members": False, "can_change_info": False, "can_invite_users": True,
+                                 "can_post_messages": True, "can_edit_messages": True, "can_pin_messages": True, "can_manage_topics": True,
+                                 "can_post_stories": False, "can_edit_stories": False, "can_delete_stories": False})
+            return self._ok({"status": status, "user": user})
         if api == "createForumTopic":
             self.topics.append(str(params.get("name")))
             return self._ok({"message_thread_id": 100 + len(self.topics), "name": params.get("name"), "icon_color": 7322096})

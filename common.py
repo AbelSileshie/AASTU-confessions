@@ -452,7 +452,7 @@ def live_buttons(context: ContextTypes.DEFAULT_TYPE, lang: str, number: int, cha
     """[📣 Open in channel] [💬 Comments] (+ [➕ Join channel] when the channel is private)."""
     info = context.bot_data.get("channel_info") or {}
     rows = [[(t(lang, "live.btn_open"), post_link(context, channel_msg_id)), (t(lang, "live.btn_comments"), bot_link(context, f"c_{number}"))]]
-    if not info.get("username") and info.get("invite_link", "").startswith("https://"):
+    if not info.get("username") and (info.get("invite_link") or "").startswith("https://"):
         rows.append([(t(lang, "live.btn_join"), info["invite_link"])])
     return kb(rows)
 

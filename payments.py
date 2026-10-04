@@ -168,7 +168,10 @@ def _parse_ts(v: Any) -> int | None:
 
 
 def _norm_name(s: str) -> str:
-    return re.sub(r"[^a-z]", "", (s or "").lower())
+    """Script-agnostic comparison key: NFKC, casefold, keep letters/digits only."""
+    import unicodedata
+
+    return "".join(ch for ch in unicodedata.normalize("NFKC", s or "").casefold() if ch.isalnum())
 
 
 def evaluate(data: dict, price_etb: int, now: int, max_age_days: int, expected_holder: str,
@@ -194,8 +197,8 @@ def evaluate(data: dict, price_etb: int, now: int, max_age_days: int, expected_h
             return Acceptance("needs_review", "receiver_mismatch", amount, sender, matched, confirmed_before)
     else:
         # Webhook / status payloads omit settlementAccountMatch → fall back to holder name
-        receiver = str(data.get("receiverName") or "")
-        if not receiver or _norm_name(receiver) != _norm_name(expected_holder):
+        receiver = _norm_name(str(data.get("receiverName") or ""))
+        if not receiver or receiver != _norm_name(expected_holder):
             return Acceptance("needs_review", "receiver_unconfirmed", amount, sender, None, confirmed_before)
         matched = True
 
@@ -242,6 +245,8 @@ def apply_result(payment_id: int, data: dict, raw: str) -> Acceptance:
     p = db.one("SELECT p.*, a.price_etb, a.payout_account_id FROM payments p JOIN ads a ON a.id=p.ad_id WHERE p.id=?", (payment_id,))
     if not p:
         return Acceptance("failed", "unknown_payment")
+    if p["status"] not in ("submitted", "queued"):  # webhook and poll both arrived; first one wins
+        return Acceptance("failed", "already_applied")
     holder = db.scalar("SELECT holder FROM payout_accounts WHERE id=?", (p["payout_account_id"],), "") or ""
     acc = evaluate(data, p["price_etb"], db.now(), cfg("payment_max_age_days", 7), holder,
                    reference_used(p["bank"], p["reference"], payment_id))
@@ -266,8 +271,9 @@ def apply_result(payment_id: int, data: dict, raw: str) -> Acceptance:
     return acc
 
 
-async def verify_payment(context, payment_id: int) -> tuple[str, Acceptance | None]:
-    """Submit to Verify.et. Returns (outcome_kind, acceptance_if_completed)."""
+async def verify_payment(context, payment_id: int, schedule_retry: bool = True) -> tuple[str, Acceptance | None]:
+    """Submit to Verify.et. Returns (outcome_kind, acceptance_if_completed).
+    `schedule_retry=False` is used by retry_job itself so each round spawns at most one follow-up."""
     p = db.one("SELECT p.*, a.payout_account_id FROM payments p JOIN ads a ON a.id=p.ad_id WHERE p.id=?", (payment_id,))
     account = db.one("SELECT account FROM payout_accounts WHERE id=?", (p["payout_account_id"],))
     body = build_request(p["bank"], p["reference"], p["extra"] or "", account["account"] if account else "")
@@ -289,7 +295,8 @@ async def verify_payment(context, payment_id: int) -> tuple[str, Acceptance | No
     if outcome.kind == "retry":
         db.execute("UPDATE payments SET status='queued', raw=? WHERE id=?", (outcome.raw, payment_id))
         db.execute("UPDATE ads SET status='verifying' WHERE id=?", (p["ad_id"],))
-        context.job_queue.run_once(retry_job, RETRY_BACKOFF_SEC[0], data={"payment_id": payment_id, "attempt": 0}, name=f"retry-{payment_id}")
+        if schedule_retry:
+            context.job_queue.run_once(retry_job, RETRY_BACKOFF_SEC[0], data={"payment_id": payment_id, "attempt": 0}, name=f"retry-{payment_id}")
         return "retry", None
     db.execute("UPDATE payments SET status='failed', reason=?, raw=? WHERE id=?", (outcome.kind, outcome.raw, payment_id))
     return outcome.kind, None
@@ -300,7 +307,7 @@ async def retry_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     p = db.one("SELECT status FROM payments WHERE id=?", (d["payment_id"],))
     if not p or p["status"] != "queued":
         return
-    kind, acc = await verify_payment(context, d["payment_id"])
+    kind, acc = await verify_payment(context, d["payment_id"], schedule_retry=False)
     if kind == "retry":
         attempt = d["attempt"] + 1
         if attempt < len(RETRY_BACKOFF_SEC):
@@ -336,13 +343,15 @@ async def _give_up(context, payment_id: int, reason: str) -> None:
 async def notify_outcome(context, payment_id: int, acc: Acceptance | None) -> None:
     row = db.one("SELECT a.id ad_id, a.price_etb, adv.user_id FROM payments p JOIN ads a ON a.id=p.ad_id "
                  "JOIN advertisers adv ON adv.id=a.advertiser_id WHERE p.id=?", (payment_id,))
-    if not row or not acc:
+    if not row or not acc or acc.reason == "already_applied":
         return
     msg = outcome_message("en", acc, row["price_etb"], attempts_left=None)
     try:
         await context.bot.send_message(row["user_id"], msg)
     except TelegramError:
         pass
+    if acc.reason == "already_applied":
+        return
     if acc.status in ("mismatch", "needs_review"):
         await alert_admins(context, f"🧾 Ad #{row['ad_id']} payment needs review ({acc.reason}). Use /ads.", kind="ads")
 

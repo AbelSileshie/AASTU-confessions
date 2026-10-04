@@ -138,8 +138,12 @@ def move(table: str, row_id: int, delta: int, actor: int) -> bool:
         return False
     a, b = rows[idx], rows[idx + delta]
     with db.tx():
-        db.execute(f"UPDATE {table} SET sort=? WHERE id=?", (idx + delta + 1, a["id"]))  # nosec B608
-        db.execute(f"UPDATE {table} SET sort=? WHERE id=?", (idx + 1, b["id"]))  # nosec B608
+        if a["sort"] == b["sort"]:  # gaps/duplicates → renumber contiguously first
+            for i, r in enumerate(rows, 1):
+                db.execute(f"UPDATE {table} SET sort=? WHERE id=?", (i, r["id"]))  # nosec B608
+            a, b = {**a, "sort": idx + 1}, {**b, "sort": idx + delta + 1}
+        db.execute(f"UPDATE {table} SET sort=? WHERE id=?", (b["sort"], a["id"]))  # nosec B608
+        db.execute(f"UPDATE {table} SET sort=? WHERE id=?", (a["sort"], b["id"]))  # nosec B608
     db.audit(actor, f"{table}_move", str(row_id), str(delta))
     return True
 
