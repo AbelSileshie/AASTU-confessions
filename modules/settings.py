@@ -5,15 +5,31 @@ import json
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import config
 import db
-from fmt import Rich
-from common import is_private_chat, kb, normalize_newlines, pending_clear, pending_get, pending_set, render_setting_text, staff_reply
-from textfilter import strip_invisible
+from common import (
+    is_private_chat,
+    kb,
+    normalize_newlines,
+    pending_clear,
+    pending_get,
+    pending_set,
+    render_setting_text,
+    staff_reply,
+)
 from config import cfg
+from fmt import Rich
 from security import require, verify_cb
+from textfilter import strip_invisible
 
 GROUPS = ("submissions", "posting", "comments", "moderation", "ads", "texts")
 CONFIG_TABLES = ("settings", "categories", "packages", "wordlist")
@@ -207,8 +223,8 @@ async def import_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, dict):
-            raise ValueError
-    except (ValueError, UnicodeDecodeError):
+            raise TypeError("Expected a JSON object")
+    except (ValueError, TypeError, UnicodeDecodeError):
         await update.message.reply_text("Invalid JSON.")
         return
     n = import_config(data, update.effective_user.id)

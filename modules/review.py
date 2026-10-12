@@ -11,14 +11,35 @@ import json
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import db
-from common import alert_admins, category_labels, pending_clear, pending_get, pending_set, staff_reply, fmt_ts, is_private_chat, kb, notify_author, reasons_kb, staff_name, user_lang
+from common import (
+    alert_admins,
+    category_labels,
+    fmt_ts,
+    is_private_chat,
+    kb,
+    notify_author,
+    pending_clear,
+    pending_get,
+    pending_set,
+    reasons_kb,
+    staff_name,
+    staff_reply,
+    user_lang,
+)
 from config import cfg
+from fmt import Rich, card
 from i18n import t
 from security import has_role, require, verify_cb
-from fmt import Rich, card
 from textfilter import check_text, highlight, strip_invisible
 
 REJECT_REASONS = ("names", "explicit", "spam", "unclear", "other")
@@ -353,7 +374,7 @@ async def edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     editing = pending_get(context, "editing", update.effective_chat.id)
     if not editing:
         return
-    kind, item_id = editing
+    _, item_id = editing
     actor = update.effective_user.id
     new_text = strip_invisible(update.message.text or "").strip()
     result = check_text(new_text, min_len=cfg("min_len", 20), max_len=cfg("max_len", 2000), blocklist=[], risklist=[])

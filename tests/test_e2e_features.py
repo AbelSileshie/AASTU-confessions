@@ -7,7 +7,7 @@ import db
 from jobs.housekeeping import comment_digest_job
 from jobs.poster import poster_job
 from security import author_hash, sign_cb
-from tests.e2e_harness import ADMIN_GROUP, OWNER, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP
 from tests.fake_telegram import callback_update
 
 pytestmark = pytest.mark.asyncio
@@ -159,7 +159,8 @@ async def test_myads_reopens_pay_screen(h):
     assert h.last(ADV).button(f"#{ad_id}")
     await h.press(ADV, f"#{ad_id}")
     status = h.last(ADV)
-    assert "awaiting payment" in status.text and status.button("Pay / enter reference") and status.button("Contact admin")
+    assert "Awaiting payment" in status.text and "0/1 published" in status.text
+    assert status.button("Pay / enter reference") and status.button("Contact admin")
     await h.press(ADV, "Pay / enter reference")
     assert h.last(ADV).button("Telebirr")  # bank picker = payment flow re-entered
     await h.press(ADV, "Back")
@@ -213,7 +214,7 @@ async def test_contact_button_after_failed_payment(h):
     await _setup(h)
     from tests.e2e_harness import FakeVerify
     h.verify.responder = FakeVerify.with_result(matched=False)
-    ad_id = await _order(h)
+    await _order(h)
     await h.press(ADV, "I have paid")
     await h.press(ADV, "Telebirr")
     await h.say(ADV, "ABC123XYZ")

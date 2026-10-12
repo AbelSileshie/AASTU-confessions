@@ -11,7 +11,7 @@ import payments
 from jobs.housekeeping import expire_orders
 from jobs.poster import poster_job, unpin_job
 from payments import VerifyOutcome, apply_result, handle_verify_webhook, poll_job
-from tests.e2e_harness import ADMIN_GROUP, CHANNEL, FakeVerify, OWNER, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER, FakeVerify
 
 pytestmark = pytest.mark.asyncio
 
@@ -136,14 +136,20 @@ async def test_wrong_receiver_goes_to_manual_review(h):
     h.verify.responder = FakeVerify.with_result(matched=False)
     ad_id = await _order(h)
     await _pay(h)
+    from common import ensure_user
+    author = ensure_user(ADV)
+    db.execute("UPDATE users SET lang='am' WHERE author=?", (author,))
     assert "admin will check" in h.last(ADV).text.lower()
     assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "needs_review"
     assert "needs review" in h.last(ADMIN_GROUP).text
     await h.say(MOD, "/ads")
     assert h.last(MOD).button("Accept payment")
     await h.press(MOD, "Decline")
+    await h.press(MOD, "Wrong receiver")
     assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "cancelled"
     assert db.scalar("SELECT status FROM payments") == "manual_no"
+    assert db.scalar("SELECT reject_reason FROM ads WHERE id=?", (ad_id,)) == "wrong_receiver"
+    assert "ተቀባይ" in h.last(ADV).text
 
 
 async def test_underpayment_mismatch_then_manual_accept(h):
@@ -434,6 +440,32 @@ async def test_reject_paid_ad_marks_refund_due(h):
     assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "cancelled"
 
 
+async def test_admin_group_can_review_ads_and_advertiser_sees_decline_reason(h):
+    h.add_payout()
+    h.add_staff(MOD, "admin")
+    ad_id = await _order(h)
+    await _pay(h)
+
+    await h.say(MOD, "/ads", chat_id=-9090)
+    assert h.tg.sent_to(-9090) == []
+    await h.say(ADV, "/ads", chat_id=ADMIN_GROUP)
+    assert h.tg.sent_to(ADMIN_GROUP) == []
+    await h.say(MOD, "/ads", chat_id=ADMIN_GROUP)
+    card = h.last(ADMIN_GROUP)
+    assert card.button("Approve & schedule") and card.button("Reject")
+    await h.press(ADV, "Reject", message=card, chat_id=ADMIN_GROUP)
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "paid"
+    await h.press(MOD, "Reject", message=card, chat_id=ADMIN_GROUP)
+    await h.press(MOD, "scam", message=card, chat_id=ADMIN_GROUP)
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "refund_due"
+    assert db.scalar("SELECT reject_reason FROM ads WHERE id=?", (ad_id,)) == "scam"
+    assert any("Scam or misleading" in text for text in h.texts(ADV))
+
+    await h.say(ADV, "/myads")
+    await h.press(ADV, f"#{ad_id}")
+    assert "Scam or misleading" in h.last(ADV).text
+
+
 async def test_pinned_package_pins_and_unpins(h):
     h.add_payout()
     h.add_staff(MOD, "admin")
@@ -452,6 +484,88 @@ async def test_pinned_package_pins_and_unpins(h):
     db.execute("UPDATE ad_posts SET pinned_until=1")
     await h.run_job(unpin_job)
     assert any(c.method == "unpinChatMessage" for c in h.tg.calls)
+
+
+async def test_bundle_posts_are_spread_across_the_advertised_week(h):
+    h.add_payout()
+    h.add_staff(MOD, "admin")
+    h.verify.responder = FakeVerify.with_result(amount=3000)
+    ad_id = await _order(h, package="Bundle ×3")
+    await _pay(h)
+    await h.say(MOD, "/ads")
+    await h.press(MOD, "Approve & schedule")
+
+    rows = db.q("SELECT not_before FROM outbox WHERE kind='ad' AND ref_id=? ORDER BY not_before", (ad_id,))
+    assert len(rows) == 3
+    assert [rows[i + 1]["not_before"] - rows[i]["not_before"] for i in range(2)] == [302400, 302400]
+
+
+async def test_bot_banner_package_adds_clickable_receipt_banner(h):
+    h.add_payout()
+    h.add_staff(MOD, "admin")
+    h.verify.responder = FakeVerify.with_result(amount=1500)
+    ad_id = await _order(h, package="Bot banner")
+    await _pay(h)
+    await h.say(MOD, "/ads")
+    await h.press(MOD, "Approve & schedule")
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "done"
+
+    await h.submit_confession(901, "A confession long enough to check the banner placement after submission.")
+    receipt = h.last(901)
+    assert "Fresh coffee" in receipt.text
+    entities = receipt.params.get("entities") or []
+    if isinstance(entities, str):
+        entities = json.loads(entities)
+    assert any(entity.get("type") == "text_link" and entity.get("url") == "https://campuscafe.example.com/deal"
+               for entity in entities)
+    await h.say(ADV, "/myads")
+    await h.press(ADV, f"#{ad_id}")
+    assert "Status: Live" in h.last(ADV).text
+
+
+async def test_advertiser_myads_shows_published_link_and_pin_expiry(h):
+    h.add_payout()
+    h.add_staff(MOD, "admin")
+    h.verify.responder = FakeVerify.with_result(amount=2000)
+    ad_id = await _order(h, package="Pinned post", photo=True)
+    await _pay(h)
+    await h.say(MOD, "/ads")
+    await h.press(MOD, "Approve & schedule")
+    h.set("post_interval_sec", 0)
+    h.set("min_posts_between_ads", 0)
+    await h.run_job(poster_job)
+    post = db.one("SELECT p.channel_msg_id FROM ad_posts ap JOIN posts p ON p.number=ap.post_number WHERE ap.ad_id=?", (ad_id,))
+
+    await h.say(ADV, "/myads")
+    await h.press(ADV, f"#{ad_id}")
+    detail = h.last(ADV)
+    assert "Published" in detail.text and "1/1" in detail.text and "pinned until" in detail.text.lower()
+    assert detail.button("Open post") and detail.button("Open post")["url"].endswith(f"/{post['channel_msg_id']}")
+
+
+async def test_myads_details_are_private_even_for_copied_callbacks(h):
+    ad_id = await _order(h)
+    await h.say(ADV, "/myads")
+    card = h.last(ADV)
+    group_messages = len(h.tg.sent_to(ADMIN_GROUP))
+    await h.press(ADV, f"#{ad_id}", message=card, chat_id=ADMIN_GROUP)
+    assert len(h.tg.sent_to(ADMIN_GROUP)) == group_messages
+
+
+async def test_future_banner_is_not_reported_as_active(h):
+    h.add_payout()
+    h.add_staff(MOD, "admin")
+    h.verify.responder = FakeVerify.with_result(amount=1500)
+    ad_id = await _order(h, package="Bot banner")
+    await _pay(h)
+    await h.say(MOD, "/ads")
+    await h.press(MOD, "Schedule +24h")
+
+    await h.say(ADV, "/myads")
+    await h.press(ADV, f"#{ad_id}")
+    assert "banner scheduled" in h.last(ADV).text.lower()
+    assert "Status: Scheduled" in h.last(ADV).text
+    assert "Banner active" not in h.last(ADV).text
 
 
 async def test_ad_spacing_rules(h):

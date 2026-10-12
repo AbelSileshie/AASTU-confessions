@@ -6,7 +6,16 @@ from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
 import db
 from common import bot_link, fmt_ts, is_private_chat, staff_name, staff_reply
-from ops import ASSIGNABLE_ROLES, can_assign, create_invite, redeem_invite, remove_staff, set_role, set_shift, staff_list
+from ops import (
+    ASSIGNABLE_ROLES,
+    can_assign,
+    create_invite,
+    redeem_invite,
+    remove_staff,
+    set_role,
+    set_shift,
+    staff_list,
+)
 from security import has_role, require
 
 

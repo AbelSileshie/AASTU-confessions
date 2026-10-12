@@ -5,13 +5,23 @@ import db
 def test_migrations_applied_once():
     assert db.migrate() == []
     names = [r["name"] for r in db.q("SELECT name FROM schema_migrations ORDER BY name")]
-    assert names == ["0001_init.sql", "0002_seed.sql", "0003_connect.sql", "0004_review_stages.sql", "0005_single_stage.sql", "0006_abuse_limits.sql", "0007_text_format.sql", "0008_connect_mutual.sql", "0009_setup.sql", "0010_contact_categories.sql"]
+    assert names == ["0001_init.sql", "0002_seed.sql", "0003_connect.sql", "0004_review_stages.sql", "0005_single_stage.sql", "0006_abuse_limits.sql", "0007_text_format.sql", "0008_connect_mutual.sql", "0009_setup.sql", "0010_contact_categories.sql", "0011_enable_banner_package.sql"]
 
 
 def test_seed_present():
     assert db.scalar("SELECT count(*) FROM categories") == 8
     assert db.scalar("SELECT count(*) FROM packages") == 4
+    assert db.scalar("SELECT enabled FROM packages WHERE slug='banner'") == 1
     assert db.scalar("SELECT value FROM settings WHERE key='post_interval_sec'") == "120"
+
+
+def test_banner_migration_preserves_operator_opt_out():
+    banner_id = db.scalar("SELECT id FROM packages WHERE slug='banner'")
+    db.execute("UPDATE packages SET enabled=0 WHERE id=?", (banner_id,))
+    db.audit(1000, "packages_toggle", str(banner_id))
+    migration = (db.MIGRATIONS_DIR / "0011_enable_banner_package.sql").read_text(encoding="utf-8")
+    db.conn().executescript(migration)
+    assert db.scalar("SELECT enabled FROM packages WHERE id=?", (banner_id,)) == 0
 
 
 def test_cfg_reads_and_caches():

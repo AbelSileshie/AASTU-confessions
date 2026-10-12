@@ -6,8 +6,7 @@ import pytest
 import db
 from jobs.housekeeping import counter_refresh_job, expire_connects
 from jobs.poster import poster_job
-from security import author_hash
-from tests.e2e_harness import ADMIN_GROUP, CHANNEL, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, CHANNEL
 
 pytestmark = pytest.mark.asyncio
 
@@ -111,7 +110,7 @@ async def _setup_request(h):
 
 
 async def test_connect_is_one_way_and_two_step(h):
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     op_sent = h.last(OP)
     assert "Request sent" in op_sent.text and op_sent.button("Withdraw")
     ask = h.last(A)
@@ -139,7 +138,7 @@ async def test_connect_is_one_way_and_two_step(h):
 
 async def test_contact_card_with_username(h):
     h.tg.user_usernames[A] = "anon_person"
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     await h.press(A, "Share my contact", message=h.last(A))
     await h.press(OP, "Show contact", message=h.last(OP))
     contact = h.last(OP)
@@ -152,7 +151,7 @@ async def test_contact_card_with_username(h):
 
 
 async def test_commenter_declines(h):
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     await h.press(A, "Decline", message=h.last(A))
     assert db.scalar("SELECT status FROM connect_requests") == "declined"
     assert any("declined" in t and "share their contact" in t for t in h.texts(OP))
@@ -160,7 +159,7 @@ async def test_commenter_declines(h):
 
 
 async def test_op_withdraws_before_answer(h):
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     ask = h.last(A)
     accept = ask.callback("Share my contact")
     await h.press(OP, "Withdraw", message=h.last(OP))
@@ -172,7 +171,7 @@ async def test_op_withdraws_before_answer(h):
 
 
 async def test_commenter_revokes_before_reveal_prevents_it(h):
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     ask = h.last(A)
     await h.press(A, "Share my contact", message=ask)
     offer = h.last(OP)
@@ -186,7 +185,7 @@ async def test_commenter_revokes_before_reveal_prevents_it(h):
 
 
 async def test_op_not_interested_after_accept(h):
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     await h.press(A, "Share my contact", message=h.last(A))
     await h.press(OP, "Not interested", message=h.last(OP))
     assert db.scalar("SELECT status FROM connect_requests") == "refused"
@@ -195,7 +194,7 @@ async def test_op_not_interested_after_accept(h):
 
 
 async def test_commenter_revokes_after_reveal_within_window_only(h):
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     ask = h.last(A)
     await h.press(A, "Share my contact", message=ask)
     await h.press(OP, "Show contact", message=h.last(OP))
@@ -211,7 +210,7 @@ async def test_commenter_revokes_after_reveal_within_window_only(h):
 
 
 async def test_connect_forgery_and_wrong_actor(h):
-    n, cid = await _setup_request(h)
+    n, _ = await _setup_request(h)
     rid = db.scalar("SELECT id FROM connect_requests")
     from security import sign_cb
     # third party / wrong role presses every button
@@ -230,7 +229,7 @@ async def test_connect_forgery_and_wrong_actor(h):
 
 
 async def test_requests_list_for_both_sides(h):
-    n, cid = await _setup_request(h)
+    n, _ = await _setup_request(h)
     await h.say(OP, "📝 My confessions")
     assert h.last(OP).button("Contact requests")
     await h.press(OP, "Contact requests")
@@ -243,7 +242,7 @@ async def test_requests_list_for_both_sides(h):
 
 
 async def test_connect_expiry(h):
-    n, cid = await _setup_request(h)
+    await _setup_request(h)
     ask = h.last(A)
     db.execute("UPDATE connect_requests SET created=created-10000000")
     expire_connects(db.now())

@@ -3,7 +3,6 @@ button-label invariant; real process lifecycle (run_polling with a fake Telegram
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 
@@ -12,7 +11,7 @@ from telegram import Update
 
 import db
 from modules.setup import apply_overrides, checklist
-from tests.e2e_harness import ADMIN_GROUP, BACKUP, CHANNEL, OWNER, h  # noqa: F401
+from tests.e2e_harness import BACKUP, CHANNEL, OWNER
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,13 +76,13 @@ async def test_non_owner_cannot_assign_and_leaving_is_ignored(h):
 
 
 async def test_checklist_reports_red_and_green(h):
-    text, ents, ok = await checklist(h.context())
+    text, _, _ = await checklist(h.context())
     assert "Setup checklist" in text and "❌" in text  # no moderators, no payouts yet
     assert "Moderators" in text and "Payout accounts" in text
     h.add_staff(ADMIN, "admin")
     h.add_payout()
     h.set("ads_enabled", 0)
-    text, ents, ok = await checklist(h.context())
+    text, _, _ = await checklist(h.context())
     assert "Payout" not in text  # ads off → not required
     assert "✅ Moderators" in text or "Moderators — 1 active" in text
 

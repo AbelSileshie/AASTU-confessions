@@ -13,7 +13,13 @@ import config
 import db
 import security
 from payments import VerifyClient
-from tests.fake_telegram import FakeRequest, callback_update, document_update, photo_update, text_update
+from tests.fake_telegram import (
+    FakeRequest,
+    callback_update,
+    document_update,
+    photo_update,
+    text_update,
+)
 
 OWNER = 1000
 CHANNEL = -1001

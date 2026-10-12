@@ -40,7 +40,7 @@ from config import cfg
 from fmt import Rich
 from i18n import t
 from security import verify_cb
-from textfilter import check_text, strip_invisible, text_hash
+from textfilter import check_text, strip_invisible, text_hash, valid_ad_url
 
 CATEGORY, TEXT, PREVIEW = range(3)
 
@@ -322,7 +322,11 @@ async def _finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: st
     r = Rich().text(normalize_newlines(cfg("received_text", "")))
     banner = active_banner()
     if banner:
-        r.nl(2).italic(banner)
+        r.nl(2)
+        if banner["url"] and valid_ad_url(banner["url"], cfg("ads_allow_shorteners", False)):
+            r.link(banner["text"], banner["url"])
+        else:
+            r.italic(banner["text"])
     for k in ("category_ids", "text", "text_hash", "risk_hits"):
         context.user_data.pop(k, None)
     text, ents = r.build()

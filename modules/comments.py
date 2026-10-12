@@ -1,7 +1,13 @@
 """Anonymous comment threads + consent-based Connect (OP ↔ commenter)."""
 from __future__ import annotations
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, Update, User
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MessageEntity,
+    Update,
+    User,
+)
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -14,7 +20,22 @@ from telegram.ext import (
 )
 
 import db
-from common import alert_admins, dispatch_nav, ensure_user, exit_row, is_banned, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, parse_int, send_home, user_lang
+from common import (
+    alert_admins,
+    dispatch_nav,
+    ensure_user,
+    exit_row,
+    is_banned,
+    is_private_chat,
+    kb,
+    lang_of,
+    nav_action,
+    nav_keyboard,
+    nav_regex,
+    parse_int,
+    send_home,
+    user_lang,
+)
 from config import cfg
 from fmt import Rich, card
 from i18n import t
@@ -201,9 +222,8 @@ async def cancel_write(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return ConversationHandler.END
         await send_home(update.callback_query.message, lang, t(lang, "nav.cancelled"))
         return ConversationHandler.END
-    if update.message:
-        if not await dispatch_nav(update.message, context, lang, nav_action(update.message.text)):
-            await send_home(update.message, lang, t(lang, "nav.cancelled"))
+    if update.message and not await dispatch_nav(update.message, context, lang, nav_action(update.message.text)):
+        await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END
 
 

@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-import db
 from jobs.poster import poster_job
-from tests.e2e_harness import ADMIN_GROUP, OWNER, h  # noqa: F401
+from tests.e2e_harness import OWNER
 
 pytestmark = pytest.mark.asyncio
 

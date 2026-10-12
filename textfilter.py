@@ -11,7 +11,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-_URL_RE = re.compile(r"(?:https?://|www\.|t\.me/|telegram\.me/|\b[\w-]+\.(?:com|net|org|et|io|me|ly|co|app|info|xyz)\b)", re.I)
+_URL_RE = re.compile(r"(?:https?://|www\.|t\.me/|telegram\.me/|\b[\w-]+\.(?:com|net|org|et|io|me|ly|co|app|info|xyz)\b)", re.IGNORECASE)
 _MENTION_RE = re.compile(r"(?<![\w@])@[A-Za-z][A-Za-z0-9_]{3,}")
 _PHONE_RE = re.compile(r"(?:\+?251|0)\s?9\s?\d(?:[\s\-.]?\d){7}")
 _REPEAT_RE = re.compile(r"(.)\1+")
@@ -132,9 +132,10 @@ def valid_ad_url(url: str, allow_shorteners: bool = False) -> bool:
         return False
     if p.scheme != "https" or not p.netloc or len(url) > 500:
         return False
-    host = p.hostname or ""
+    try:
+        host = (p.hostname or "").encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return False
     if host in ("t.me", "telegram.me") and (p.path.startswith("/joinchat") or p.path.startswith("/+")):
         return False
-    if not allow_shorteners and host in _SHORTENERS:
-        return False
-    return True
+    return not (not allow_shorteners and host in _SHORTENERS)

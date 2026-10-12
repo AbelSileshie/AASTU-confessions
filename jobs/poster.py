@@ -6,14 +6,23 @@ import json
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
-
-from fmt import CAPTION_LIMIT, Rich, card
 from telegram.error import RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
 import db
-from common import alert_admins, bot_link, hashtags_of, kb, live_buttons, notify_author, post_link, staff_name, user_lang
+from common import (
+    alert_admins,
+    bot_link,
+    hashtags_of,
+    kb,
+    live_buttons,
+    notify_author,
+    post_link,
+    staff_name,
+    user_lang,
+)
 from config import cfg
+from fmt import CAPTION_LIMIT, Rich, card
 from i18n import t
 
 log = logging.getLogger(__name__)

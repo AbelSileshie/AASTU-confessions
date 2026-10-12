@@ -6,16 +6,23 @@ import hmac
 import json
 import logging
 import time
+from typing import Any
 
 from aiohttp import web
 from telegram import Update
+from telegram.ext import Application
 
 import db
+from config import Env
 
 log = logging.getLogger(__name__)
 
 MAX_BODY = 1_000_000
 WEBHOOK_MAX_SKEW_SEC = 300
+ENV_KEY: web.AppKey[Env] = web.AppKey("env")
+APPLICATION_KEY: web.AppKey[Application] = web.AppKey("application")
+VERIFY_HANDLER_KEY: web.AppKey[Any] = web.AppKey("verify_handler")
+STATE_KEY: web.AppKey[dict[str, int]] = web.AppKey("state")
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +52,7 @@ def verify_signature(secret: str, timestamp: str | None, raw_body: bytes, header
 # ---------------------------------------------------------------------------
 
 async def telegram_webhook(request: web.Request) -> web.Response:
-    env = request.app["env"]
+    env = request.app[ENV_KEY]
     if not env.tg_webhook_secret or not hmac.compare_digest(
         request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), env.tg_webhook_secret
     ):
@@ -58,20 +65,20 @@ async def telegram_webhook(request: web.Request) -> web.Response:
         return web.Response(status=400)
     if not isinstance(data, dict) or not isinstance(data.get("update_id"), int):
         return web.Response(status=400)
-    application = request.app["application"]
+    application = request.app[APPLICATION_KEY]
     try:
         update = Update.de_json(data, application.bot)
     except (KeyError, TypeError, ValueError):
         return web.Response(status=400)
     if update is None:
         return web.Response(status=400)
-    request.app["state"]["last_update_at"] = db.now()
+    request.app[STATE_KEY]["last_update_at"] = db.now()
     await application.update_queue.put(update)
     return web.Response(status=200)
 
 
 async def verify_webhook(request: web.Request) -> web.Response:
-    env = request.app["env"]
+    env = request.app[ENV_KEY]
     if request.content_length and request.content_length > MAX_BODY:
         return web.Response(status=413)
     raw = await request.read()
@@ -90,10 +97,10 @@ async def verify_webhook(request: web.Request) -> web.Response:
     delivery_id = delivery_id[:128]
     if db.one("SELECT 1 FROM webhook_events WHERE delivery_id=?", (delivery_id,)):
         return web.Response(status=204)
-    handler = request.app.get("verify_handler")
+    handler = request.app.get(VERIFY_HANDLER_KEY)
     if handler:
         try:
-            handled = await handler(payload, request.app["application"])
+            handled = await handler(payload, request.app[APPLICATION_KEY])
         except Exception:
             log.exception("verify webhook processing failed")
             return web.Response(status=500)
@@ -109,7 +116,7 @@ async def verify_webhook(request: web.Request) -> web.Response:
 async def healthz(request: web.Request) -> web.Response:
     now = db.now()
     last_post = int(db.scalar("SELECT v FROM meta WHERE k='last_post_at'", default="0") or 0)
-    last_update = request.app["state"].get("last_update_at", 0)
+    last_update = request.app[STATE_KEY].get("last_update_at", 0)
     body = {
         "ok": True,
         "queue": db.scalar("SELECT count(*) FROM submissions", default=0),
@@ -122,10 +129,10 @@ async def healthz(request: web.Request) -> web.Response:
 
 def build_app(env, application, verify_handler=None) -> web.Application:
     app = web.Application(client_max_size=MAX_BODY)
-    app["env"] = env
-    app["application"] = application
-    app["verify_handler"] = verify_handler
-    app["state"] = {}
+    app[ENV_KEY] = env
+    app[APPLICATION_KEY] = application
+    app[VERIFY_HANDLER_KEY] = verify_handler
+    app[STATE_KEY] = {}
     app.router.add_post(env.webhook_path, telegram_webhook)
     app.router.add_post("/webhooks/verify", verify_webhook)
     app.router.add_get("/healthz", healthz)

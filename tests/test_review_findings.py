@@ -1,17 +1,15 @@
 """Regression tests for the code-review findings (S2–S12)."""
 from __future__ import annotations
 
-import os
+from typing import ClassVar
 
 import pytest
 
 import config
 import db
 from ops import move
-from payments import Acceptance, evaluate, poll_job, retry_job
-from tests.e2e_harness import ADMIN_GROUP, FakeVerify, OWNER, h  # noqa: F401
-
-pytestmark = pytest.mark.asyncio
+from payments import evaluate, poll_job, retry_job
+from tests.e2e_harness import ADMIN_GROUP, OWNER, FakeVerify
 
 ADV, ADMIN = 801, 702
 
@@ -42,6 +40,7 @@ def test_owner_id_required(monkeypatch):
 
 async def test_telegram_webhook_rejects_everything_without_secret(h):
     from aiohttp.test_utils import TestClient, TestServer
+
     from web.server import build_app
 
     env = h.env.__class__(**{**h.env.__dict__, "tg_webhook_secret": ""})
@@ -53,7 +52,7 @@ async def test_telegram_webhook_rejects_everything_without_secret(h):
 
 # S3 — receiver name matching must not accept empty/normalised-away names
 class TestReceiverName:
-    base = {"verified": True, "amount": 800}
+    base: ClassVar[dict] = {"verified": True, "amount": 800}
 
     def test_amharic_holder_mismatch_is_review(self):
         data = {**self.base, "receiverName": "ኩሩ ላብስ"}
@@ -139,7 +138,7 @@ async def test_apply_result_is_idempotent_between_webhook_and_poll(h):
 
 # S5 — only an admin of the chat can assign it
 async def test_assign_requires_owner_to_admin_that_chat(h):
-    from tests.test_e2e_setup import _added, NEW_CHANNEL
+    from tests.test_e2e_setup import NEW_CHANNEL, _added
     h.tg.chat_admins[NEW_CHANNEL] = {999000}  # bot only; owner is not an admin there
     await h.app.process_update(_added(h.bot, NEW_CHANNEL, "channel", "🛡 Admin group"))
     await h.press(OWNER, "Confessions channel")
@@ -148,7 +147,7 @@ async def test_assign_requires_owner_to_admin_that_chat(h):
 
 
 async def test_offer_deduped_per_chat_per_day(h):
-    from tests.test_e2e_setup import _added, NEW_CHANNEL
+    from tests.test_e2e_setup import NEW_CHANNEL, _added
     await h.app.process_update(_added(h.bot, NEW_CHANNEL, "channel", "X"))
     n = len(h.tg.sent_to(OWNER))
     await h.app.process_update(_added(h.bot, NEW_CHANNEL, "channel", "X"))
@@ -186,7 +185,7 @@ def test_failing_migration_is_not_recorded(tmp_path, monkeypatch):
     bad = dbmod.MIGRATIONS_DIR / "0999_bad_test.sql"
     bad.write_text("CREATE TABLE zz_test(id INT);\nSELECT * FROM table_that_does_not_exist;")
     try:
-        with pytest.raises(Exception):
+        with pytest.raises(dbmod.sqlite3.OperationalError):
             dbmod.reset_for_tests(str(tmp_path / "m.db"))
         assert dbmod.scalar("SELECT count(*) FROM sqlite_master WHERE name='zz_test'") == 0
         assert dbmod.scalar("SELECT count(*) FROM schema_migrations WHERE name='0999_bad_test.sql'") == 0

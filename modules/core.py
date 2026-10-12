@@ -3,10 +3,33 @@ from __future__ import annotations
 
 from telegram import MenuButtonCommands, Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
-from common import dispatch_nav, pending_get, ensure_user, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, send_home, show_help, show_home, show_lang, show_mine, show_rules
 import db
+from common import (
+    dispatch_nav,
+    ensure_user,
+    is_private_chat,
+    kb,
+    lang_of,
+    nav_action,
+    nav_keyboard,
+    nav_regex,
+    pending_get,
+    send_home,
+    show_help,
+    show_home,
+    show_lang,
+    show_mine,
+    show_rules,
+)
 from config import cfg
 from i18n import SUPPORTED, t
 from security import author_hash, verify_cb

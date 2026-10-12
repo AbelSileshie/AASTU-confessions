@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import time
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import db
-from tests.e2e_harness import h  # noqa: F401
 from web.server import build_app, verify_signature
 
-pytestmark = pytest.mark.asyncio
+RECEIVED_KEY: web.AppKey[list] = web.AppKey("received", list)
+HANDLER_OVERRIDE_KEY: web.AppKey[dict] = web.AppKey("handler_override", dict)
 
 
 def _sig(secret: str, ts: str, body: bytes) -> str:
@@ -66,8 +68,8 @@ async def client(h):
         return result
 
     app = build_app(h.env, h.app, verify_handler=handler)
-    app["received"] = received
-    app["handler_override"] = handler_override
+    app[RECEIVED_KEY] = received
+    app[HANDLER_OVERRIDE_KEY] = handler_override
     async with TestClient(TestServer(app)) as c:
         yield c
 
@@ -106,7 +108,7 @@ async def test_telegram_webhook_rejects_garbage(client, h):
     assert (await client.post(h.env.webhook_path, json={"foo": "bar"}, headers=hdr)).status == 400
     assert (await client.post(h.env.webhook_path, json=[1, 2], headers=hdr)).status == 400
     big = b"x" * 1_100_000
-    assert (await client.post(h.env.webhook_path, data=big, headers=hdr)).status == 413
+    assert (await client.post(h.env.webhook_path, data=io.BytesIO(big), headers=hdr)).status == 413
 
 
 async def test_verify_webhook_signature_enforced(client):
@@ -135,7 +137,7 @@ async def test_verify_webhook_test_ping_and_idempotency(client):
     assert db.scalar("SELECT count(*) FROM webhook_events") == 1
     import asyncio
     await asyncio.sleep(0.05)
-    assert len(client.server.app["received"]) == 1
+    assert len(client.server.app[RECEIVED_KEY]) == 1
 
 
 async def test_verify_webhook_failure_is_retryable(client):
@@ -147,7 +149,7 @@ async def test_verify_webhook_failure_is_retryable(client):
         if calls == 1:
             raise RuntimeError("temporary processing failure")
 
-    client.server.app["handler_override"]["callback"] = flaky_handler
+    client.server.app[HANDLER_OVERRIDE_KEY]["callback"] = flaky_handler
     body = json.dumps({"event": "verification.completed", "requestId": "retry-me", "data": {}}).encode()
     ts = str(time.time())
     hdr = {"X-Webhook-Timestamp": ts, "X-Webhook-Signature": _sig("whsec_test", ts, body),
@@ -169,7 +171,7 @@ async def test_unmatched_verify_webhook_remains_retryable(client):
         calls += 1
         return calls > 1
 
-    client.server.app["handler_override"]["callback"] = delayed_match
+    client.server.app[HANDLER_OVERRIDE_KEY]["callback"] = delayed_match
     body = json.dumps({"event": "verification.completed", "requestId": "not-stored-yet", "data": {}}).encode()
     ts = str(time.time())
     hdr = {"X-Webhook-Timestamp": ts, "X-Webhook-Signature": _sig("whsec_test", ts, body),

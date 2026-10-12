@@ -20,7 +20,7 @@ def utf16_len(s: str) -> int:
 
 
 class Rich:
-    __slots__ = ("_parts", "_ents", "_len")
+    __slots__ = ("_ents", "_len", "_parts")
 
     def __init__(self) -> None:
         self._parts: list[str] = []
@@ -28,42 +28,42 @@ class Rich:
         self._len = 0
 
     # -- literal ----------------------------------------------------------------
-    def text(self, s: str) -> "Rich":
+    def text(self, s: str) -> Rich:
         if s:
             self._parts.append(s)
             self._len += utf16_len(s)
         return self
 
-    def nl(self, n: int = 1) -> "Rich":
+    def nl(self, n: int = 1) -> Rich:
         return self.text("\n" * n)
 
     # -- styled (bot-authored) ------------------------------------------------------
-    def styled(self, s: str, type_: str, **kw) -> "Rich":
+    def styled(self, s: str, type_: str, **kw) -> Rich:
         if not s:
             return self
         self._ents.append(MessageEntity(type_, self._len, utf16_len(s), **kw))
         return self.text(s)
 
-    def bold(self, s: str) -> "Rich":
+    def bold(self, s: str) -> Rich:
         return self.styled(s, MessageEntity.BOLD)
 
-    def italic(self, s: str) -> "Rich":
+    def italic(self, s: str) -> Rich:
         return self.styled(s, MessageEntity.ITALIC)
 
-    def code(self, s: str) -> "Rich":
+    def code(self, s: str) -> Rich:
         return self.styled(s, MessageEntity.CODE)
 
-    def link(self, s: str, url: str) -> "Rich":
+    def link(self, s: str, url: str) -> Rich:
         if not url.startswith("https://") and not url.startswith("tg://"):
             return self.text(s)
         return self.styled(s, MessageEntity.TEXT_LINK, url=url)
 
-    def quote(self, s: str, expandable: bool = False) -> "Rich":
+    def quote(self, s: str, expandable: bool = False) -> Rich:
         """Blockquote *container* around (possibly user) text; the text stays literal."""
         kind = MessageEntity.EXPANDABLE_BLOCKQUOTE if expandable else MessageEntity.BLOCKQUOTE
         return self.styled(s, kind)
 
-    def label(self, name: str, value: str) -> "Rich":
+    def label(self, name: str, value: str) -> Rich:
         """`Name: value` with a bold name; value literal."""
         return self.bold(name + ":").text(" " + value)
 

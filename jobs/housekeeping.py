@@ -88,7 +88,7 @@ async def hourly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         await ensure_topics(context)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("ensure_topics failed")
 
 
@@ -109,7 +109,7 @@ async def housekeeping_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             except TelegramError:
                 pass
         await _queue_alert(context)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("housekeeping failed")
 
 

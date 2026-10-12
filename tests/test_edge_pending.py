@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 import db
-from tests.e2e_harness import ADMIN_GROUP, OWNER, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, OWNER
 
 pytestmark = pytest.mark.asyncio
 

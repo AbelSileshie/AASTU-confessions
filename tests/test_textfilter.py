@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import pytest
 
 from textfilter import (
@@ -75,7 +77,7 @@ class TestWordlists:
 
 
 class TestCheckText:
-    kw = dict(min_len=5, max_len=50, blocklist=["spam"], risklist=["video"])
+    kw: ClassVar[dict] = {"min_len": 5, "max_len": 50, "blocklist": ["spam"], "risklist": ["video"]}
 
     def test_ok_with_risk(self):
         r = check_text("there is a video of me", **self.kw)
@@ -117,6 +119,9 @@ class TestAdUrl:
     def test_shortener_toggle(self):
         assert not valid_ad_url("https://bit.ly/x")
         assert valid_ad_url("https://bit.ly/x", allow_shorteners=True)
+        assert not valid_ad_url("https://bit.ly./x")
+        assert not valid_ad_url("https://bit.ly。/x")
+        assert not valid_ad_url("https://t.me。/+invite")
 
     def test_too_long(self):
         assert not valid_ad_url("https://a.com/" + "x" * 600)

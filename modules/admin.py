@@ -8,12 +8,32 @@ from __future__ import annotations
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import db
-from common import TOPICS, TOPIC_NAMES, bot_link, ensure_topics, fmt_ts, is_private_chat, kb, pending_clear, pending_get, pending_set, send_ad_cards, staff_name
-from fmt import Rich
+from common import (
+    TOPIC_NAMES,
+    TOPICS,
+    bot_link,
+    ensure_topics,
+    fmt_ts,
+    is_private_chat,
+    kb,
+    pending_clear,
+    pending_get,
+    pending_set,
+    send_ad_cards,
+    staff_name,
+)
 from config import cfg, invalidate
+from fmt import Rich
 from ops import (
     CATEGORY_FIELDS,
     PACKAGE_FIELDS,

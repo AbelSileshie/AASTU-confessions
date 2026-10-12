@@ -7,7 +7,7 @@ import db
 from jobs.housekeeping import housekeeping_job, release_stale_claims
 from jobs.poster import poster_job
 from security import author_hash
-from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER
 
 pytestmark = pytest.mark.asyncio
 

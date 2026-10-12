@@ -5,14 +5,44 @@ import json
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import db
-from common import ad_card, is_private_chat, kb, staff_reply, parse_int, pending_clear, pending_get, pending_set, post_link, reasons_kb, send_ad_cards
+from common import (
+    ad_card,
+    kb,
+    parse_int,
+    pending_clear,
+    pending_get,
+    pending_set,
+    post_link,
+    reasons_kb,
+    send_ad_cards,
+    staff_reply,
+    user_lang,
+)
 from i18n import t
-from security import require, verify_cb
+from security import author_hash, require, verify_cb
 
 AD_REJECT_REASONS = ("policy", "scam", "adult", "betting", "quality", "other")
+PAYMENT_REJECT_REASONS = ("wrong_receiver", "underpaid", "duplicate_reference", "other")
+
+
+def _review_chat_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    env = context.bot_data.get("env")
+    return bool(chat and (chat.type == "private" or (env and chat.id == env.admin_group_id)))
+
+
+def _payment_reject_label(reason: str) -> str:
+    return t("en", "ads.payment_reject." + reason)
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +77,7 @@ def schedule(ad_id: int, actor: int, not_before: int = 0) -> bool:
     buttons = json.dumps([{"text": ad["button_text"], "url": ad["button_url"]}]) if ad["button_text"] and ad["button_url"] else None
     posts = max(1, ad["posts_left"] or pkg["posts"] or 1) if pkg["posts"] else 0
     with db.tx():
-        gap = 86400 if posts > 1 else 0  # bundle posts spaced a day apart
+        gap = (7 * 86400) // (posts - 1) if posts > 1 else 0
         for i in range(posts):
             db.execute("INSERT INTO outbox(kind, text, media_file_id, buttons, ref_id, not_before, approved_by, approved_at) "
                        "VALUES ('ad',?,?,?,?,?,?,?)",
@@ -68,24 +98,39 @@ def schedule(ad_id: int, actor: int, not_before: int = 0) -> bool:
 
 @require("admin")
 async def ads_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_private_chat(update):
+    if not _review_chat_allowed(update, context):
         return
     if not await send_ad_cards(update.message):
         await update.message.reply_text("No ads waiting.", reply_markup=kb([[("⬅️ Admin", "hub", "home")]]))
 
 
-async def _notify_advertiser(context, ad_id: int, text: str) -> None:
-    uid = db.scalar("SELECT adv.user_id FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id WHERE a.id=?", (ad_id,))
+def _ad_reason_label(reason: str, lang: str) -> str:
+    namespace = "ads.payment_reject" if reason in PAYMENT_REJECT_REASONS else "ads.reject_reason"
+    return t(lang, f"{namespace}.{reason}")
+
+
+async def _send_advertiser(context, user_id: int, text: str) -> None:
+    try:
+        await context.bot.send_message(user_id, text, disable_web_page_preview=True)
+    except TelegramError:
+        pass
+
+
+async def _notify_advertiser(context, order_id: int, key: str, **values) -> None:
+    uid = db.scalar("SELECT adv.user_id FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id WHERE a.id=?", (order_id,))
     if uid:
-        try:
-            await context.bot.send_message(uid, text, disable_web_page_preview=True)
-        except TelegramError:
-            pass
+        lang = user_lang(author_hash(uid))
+        if key in ("ads.rejected", "ads.payment_declined"):
+            values["reason"] = _ad_reason_label(values["reason"], lang)
+        await _send_advertiser(context, uid, t(lang, key, **values))
 
 
 @require("admin")
 async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
+    if not _review_chat_allowed(update, context):
+        await q.answer()
+        return
     parsed = verify_cb(q.data)
     if not parsed:
         await q.answer()
@@ -101,14 +146,14 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action == "approve":
         if transition(ad_id, "approved", actor) and schedule(ad_id, actor):
             await q.answer("Scheduled")
-            await _notify_advertiser(context, ad_id, t("en", "ads.approved", ad_id=ad_id))
+            await _notify_advertiser(context, ad_id, "ads.approved", ad_id=ad_id)
             await _edit(q, "✅ approved & scheduled")
         else:
             await q.answer("Not in a state that can be approved.", show_alert=True)
     elif action == "later":
         if transition(ad_id, "approved", actor) and schedule(ad_id, actor, not_before=db.now() + 86400):
             await q.answer("Scheduled for +24h")
-            await _notify_advertiser(context, ad_id, t("en", "ads.approved", ad_id=ad_id))
+            await _notify_advertiser(context, ad_id, "ads.approved", ad_id=ad_id)
             await _edit(q, "🕐 scheduled +24h")
         else:
             await q.answer("Cannot schedule.", show_alert=True)
@@ -125,8 +170,9 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             db.execute("DELETE FROM outbox WHERE kind='ad' AND ref_id=?", (ad_id,))
             db.execute("DELETE FROM banners WHERE ad_id=?", (ad_id,))
             await q.answer("Rejected")
-            await _notify_advertiser(context, ad_id, t("en", "ads.rejected", ad_id=ad_id, reason=reason))
-            await _edit(q, f"❌ rejected ({reason}){' · refund due' if paid else ''}")
+            reason_label = _ad_reason_label(reason, "en")
+            await _notify_advertiser(context, ad_id, "ads.rejected", ad_id=ad_id, reason=reason)
+            await _edit(q, f"❌ rejected ({reason_label}){' · refund due' if paid else ''}")
         else:
             await q.answer("Cannot reject.", show_alert=True)
     elif action == "manual_ok":
@@ -140,19 +186,30 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             db.execute("UPDATE ads SET paid_at=? WHERE id=?", (db.now(), ad_id))
             await q.answer("Marked paid")
-            await _notify_advertiser(context, ad_id, t("en", "ads.verified"))
+            await _notify_advertiser(context, ad_id, "ads.verified")
             ad = dict(db.one("SELECT * FROM ads WHERE id=?", (ad_id,)))
             await _edit(q, "💰 payment accepted manually", markup=ad_card(ad)[1])  # keyboard only
         else:
             await q.answer("Cannot accept.", show_alert=True)
     elif action == "manual_no":
+        await q.answer()
+        half = (len(PAYMENT_REJECT_REASONS) + 1) // 2
+        reason_rows = [[(_payment_reject_label(reason), "ada", f"manual_nor:{ad_id}:{reason}")
+                        for reason in PAYMENT_REJECT_REASONS[:half]],
+                       [(_payment_reject_label(reason), "ada", f"manual_nor:{ad_id}:{reason}")
+                        for reason in PAYMENT_REJECT_REASONS[half:]]]
+        await q.message.edit_reply_markup(reply_markup=kb(reason_rows))
+    elif action == "manual_nor":
+        reason = extra if extra in PAYMENT_REJECT_REASONS else "other"
         p = db.one("SELECT id FROM payments WHERE ad_id=? ORDER BY id DESC LIMIT 1", (ad_id,))
-        if transition(ad_id, "cancelled", actor, "manual_no"):
+        if transition(ad_id, "cancelled", actor, f"manual_no:{reason}"):
+            db.execute("UPDATE ads SET reject_reason=? WHERE id=?", (reason, ad_id))
             if p:
                 db.execute("UPDATE payments SET status='manual_no', completed_at=? WHERE id=?", (db.now(), p["id"]))
             await q.answer("Declined")
-            await _notify_advertiser(context, ad_id, t("en", "ads.failed", left=0))
-            await _edit(q, "🚫 payment declined; order cancelled")
+            reason_text = _payment_reject_label(reason)
+            await _notify_advertiser(context, ad_id, "ads.payment_declined", ad_id=ad_id, reason=reason)
+            await _edit(q, f"🚫 payment declined ({reason_text}); order cancelled")
         else:
             await q.answer("Cannot decline.", show_alert=True)
 
@@ -161,6 +218,9 @@ async def ads_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def reply_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """↩️ Reply on an advertiser message → next text from this admin is DM'd to the advertiser."""
     q = update.callback_query
+    if not _review_chat_allowed(update, context):
+        await q.answer()
+        return
     parsed = verify_cb(q.data)
     await q.answer()
     if parsed and parsed[1] == "cancel":
@@ -184,7 +244,9 @@ async def reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     pending_clear(context, "ad_reply")
     text = (update.message.text or "").strip()[:1500]
-    await _notify_advertiser(context, ad_id, f"💬 Admin reply about your ad #{ad_id}:\n\n{text}")
+    uid = db.scalar("SELECT adv.user_id FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id WHERE a.id=?", (ad_id,))
+    if uid:
+        await _send_advertiser(context, uid, f"💬 Admin reply about your ad #{ad_id}:\n\n{text}")
     db.audit(update.effective_user.id, "ad_reply", f"ad:{ad_id}")
     await update.message.reply_text("Sent to the advertiser.")
 

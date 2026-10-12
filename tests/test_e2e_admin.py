@@ -6,7 +6,7 @@ import pytest
 import db
 from jobs.housekeeping import purge_declined
 from jobs.poster import poster_job
-from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, OWNER
 from tests.fake_telegram import callback_update
 
 pytestmark = pytest.mark.asyncio

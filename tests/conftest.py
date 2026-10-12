@@ -1,6 +1,8 @@
 """Shared fixtures: fresh file-backed SQLite per test, configured security."""
 from __future__ import annotations
 
+pytest_plugins = ("tests.e2e_harness",)
+
 import os
 import sys
 from pathlib import Path
@@ -19,9 +21,9 @@ os.environ.setdefault("CHANNEL_ID", "-1001")
 os.environ.setdefault("ADMIN_GROUP_ID", "-1002")
 os.environ.setdefault("BACKUP_CHANNEL_ID", "-1003")
 
-import config  # noqa: E402
-import db  # noqa: E402
-import security  # noqa: E402
+import config
+import db
+import security
 
 OWNER_ID = 1000
 

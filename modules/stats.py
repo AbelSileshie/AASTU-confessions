@@ -3,7 +3,13 @@ from __future__ import annotations
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import db
 from common import is_private_chat, kb, post_link, staff_name, staff_reply

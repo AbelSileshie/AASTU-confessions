@@ -3,15 +3,11 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 import db
 from jobs.poster import poster_job
 from security import author_hash, sign_cb
-from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER
 from tests.fake_telegram import callback_update
-
-pytestmark = pytest.mark.asyncio
 
 STUDENT, ATTACKER, MOD, ADMIN = 501, 666, 701, 702
 CONFESSION = "A perfectly ordinary confession that is long enough to pass the length check."
@@ -306,7 +302,6 @@ async def test_takedown_request_cooldown(h):
 
 
 def test_longest_callback_payloads_fit_telegram_limit():
-    from security import sign_cb
 
     samples = [("hub", "staff:9999999999:role:moderator"), ("rv", "rejr:99999999:explicit"), ("ada", "manual_ok:99999999"),
                ("cn", "ask:99999999"), ("word", "99999999:del:block"), ("pkg", "99999999:set:bot_banner_days"),

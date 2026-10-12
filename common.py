@@ -8,17 +8,29 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
-from typing import Iterable, Sequence
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.error import Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
 import db
 from config import cfg
 from i18n import SUPPORTED, t
-from security import author_hash, decrypt_ref, encrypt_ref, is_private_chat, role_of, sign_cb  # noqa: F401 - re-exported
+from security import (  # noqa: F401 - re-exported
+    author_hash,
+    decrypt_ref,
+    encrypt_ref,
+    is_private_chat,
+    role_of,
+    sign_cb,
+)
 
 log = logging.getLogger(__name__)
 
@@ -591,6 +603,7 @@ def hashtags_of(item: dict) -> str:
     return " ".join(c["hashtag"] for c in categories_of(item))
 
 
-def active_banner() -> str | None:
-    row = db.one("SELECT text FROM banners WHERE starts<=? AND ends>? ORDER BY id DESC LIMIT 1", (db.now(), db.now()))
-    return row["text"] if row else None
+def active_banner() -> dict | None:
+    row = db.one("SELECT text, url, starts, ends FROM banners WHERE starts<=? AND ends>? ORDER BY id DESC LIMIT 1",
+                 (db.now(), db.now()))
+    return dict(row) if row else None

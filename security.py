@@ -13,16 +13,17 @@ import hashlib
 import hmac
 import logging
 import secrets
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 from cryptography.fernet import Fernet, InvalidToken
+from telegram.error import TelegramError
 
 log = logging.getLogger(__name__)
 
 ROLE_RANK = {"user": 0, "moderator": 1, "admin": 2, "owner": 3}
 
 _hmac_secret: bytes = b""
-_fernet: Optional[Fernet] = None
+_fernet: Fernet | None = None
 _owner_id: int = 0
 
 
@@ -49,7 +50,7 @@ def encrypt_ref(telegram_id: int) -> bytes:
     return _fernet.encrypt(str(int(telegram_id)).encode())
 
 
-def decrypt_ref(blob: bytes | None) -> Optional[int]:
+def decrypt_ref(blob: bytes | None) -> int | None:
     if not blob or _fernet is None:
         return None
     try:
@@ -80,7 +81,7 @@ def sign_cb(action: str, payload: str = "") -> str:
     return data
 
 
-def verify_cb(data: str | None) -> Optional[tuple[str, str]]:
+def verify_cb(data: str | None) -> tuple[str, str] | None:
     """Return (action, payload) if the signature is valid, else None."""
     if not data or data.count(":") < 2:
         return None
@@ -122,8 +123,8 @@ def require(role: str) -> Callable:
                 if update.callback_query:
                     try:
                         await update.callback_query.answer()
-                    except Exception:  # nosec B110 - swallow on purpose: never reveal command existence
-                        pass
+                    except TelegramError as exc:
+                        log.debug("callback acknowledgement failed: %s", type(exc).__name__)
                 return None
             return await fn(update, context, *a, **kw)
 

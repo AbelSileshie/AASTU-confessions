@@ -5,7 +5,6 @@ import pytest
 
 import db
 from jobs.poster import poster_job
-from tests.e2e_harness import h  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 

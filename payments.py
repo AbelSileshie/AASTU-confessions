@@ -17,9 +17,10 @@ from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes
 
 import db
-from common import alert_admins
+from common import alert_admins, user_lang
 from config import cfg
 from i18n import t
+from security import author_hash
 
 log = logging.getLogger(__name__)
 
@@ -371,7 +372,7 @@ async def notify_outcome(context, payment_id: int, acc: Acceptance | None) -> No
                  "JOIN advertisers adv ON adv.id=a.advertiser_id WHERE p.id=?", (payment_id,))
     if not row or not acc or acc.reason == "already_applied":
         return
-    msg = outcome_message("en", acc, row["price_etb"], attempts_left=None)
+    msg = outcome_message(user_lang(author_hash(row["user_id"])), acc, row["price_etb"], attempts_left=None)
     try:
         await context.bot.send_message(row["user_id"], msg)
     except TelegramError:

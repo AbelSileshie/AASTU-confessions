@@ -66,7 +66,7 @@ class FakeRequest(BaseRequest):
         self.user_usernames: dict[int, str] = {}
         self.chat_admins: dict[int, set[int]] = {}  # chat_id → admin user ids (default: bot + owner)
 
-    async def initialize(self) -> None:  # noqa: D401
+    async def initialize(self) -> None:
         return None
 
     async def shutdown(self) -> None:
@@ -111,7 +111,7 @@ class FakeRequest(BaseRequest):
         api = url.rsplit("/", 1)[-1]
         params = dict(request_data.parameters) if request_data else {}
         if request_data and request_data.multipart_data:
-            for field, item in request_data.multipart_data.items():
+            for item in request_data.multipart_data.values():
                 params.setdefault("filename", getattr(item, "filename", None) or (item[0] if isinstance(item, tuple) else None))
         self.raw_calls.append((api, params))
         chat_id = _int(params.get("chat_id"))

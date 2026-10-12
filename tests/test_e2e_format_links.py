@@ -4,16 +4,13 @@ from __future__ import annotations
 import json
 import re
 
-import pytest
 from telegram import MessageEntity
 
 import db
 from common import channel_info, normalize_newlines, staff_name
 from fmt import Rich, card, utf16_len
 from jobs.poster import format_ad, format_confession, poster_job
-from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER, h  # noqa: F401
-
-pytestmark = pytest.mark.asyncio
+from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER
 
 S, S2, MOD, ADMIN, ADV = 501, 502, 701, 702, 801
 TEXT = "A confession long enough to be posted for the link and formatting tests to run."
@@ -36,13 +33,13 @@ async def _post(h, text=TEXT):
 
 class TestRich:
     def test_utf16_offsets_with_emoji(self):
-        text, ents = Rich().text("😳 hi ").bold("Title").build()
+        _, ents = Rich().text("😳 hi ").bold("Title").build()
         # 😳 is 2 UTF-16 units but 1 Python char
         assert ents[0].offset == utf16_len("😳 hi ") == 6 and ents[0].length == 5
 
     def test_amharic_plus_emoji(self):
         body = "ሰላም 😳 world"
-        text, ents = Rich().bold("H").nl().quote(body).build()
+        _, ents = Rich().bold("H").nl().quote(body).build()
         assert ents[1].offset == 2 and ents[1].length == utf16_len(body) == len(body) + 1
 
     def test_truncation_never_leaves_dangling_entities(self):
@@ -66,7 +63,7 @@ class TestRich:
 
 def test_format_ad_footer_offset_correct_with_emoji(h):
     text, ents = format_ad("☕ Great coffee 😍 deal", "mybot")
-    link = [e for e in ents if e.type == MessageEntity.TEXT_LINK][0]
+    link = next(e for e in ents if e.type == MessageEntity.TEXT_LINK)
     start = link.offset
     # decode via UTF-16 to check the entity covers exactly the footer label
     u16 = text.encode("utf-16-le")
@@ -90,7 +87,7 @@ async def test_public_channel_links(h):
     posted = await _post(h)
     live = [c for c in h.tg.sent_to(S) if "live as" in c.text][-1]
     assert live.button("Open in channel")["url"] == f"https://t.me/aastu_confessions_test/{posted.message_id}"
-    assert live.button("Comments")["url"] == f"https://t.me/aastu_confess_test_bot?start=c_1"
+    assert live.button("Comments")["url"] == "https://t.me/aastu_confess_test_bot?start=c_1"
     assert live.button("Join") is None
 
 
@@ -194,7 +191,7 @@ async def test_settings_menu_shows_current_text_as_quote(h):
     await h.say(OWNER, "/settings")
     await h.press(OWNER, "Texts")
     menu = h.last(OWNER)
-    btn = [b for b in menu.buttons() if b["text"].startswith("rules_text")][0]
+    btn = next(b for b in menu.buttons() if b["text"].startswith("rules_text"))
     await h.press_raw(OWNER, btn["callback_data"], message=menu)
     msg = h.last(OWNER)
     assert "Line breaks are kept" in msg.text and "1. No real names" in msg.text

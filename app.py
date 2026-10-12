@@ -8,7 +8,8 @@ import logging
 import signal
 import sys
 import warnings
-from datetime import time as dtime, timezone
+from datetime import time as dtime
+from datetime import timezone
 
 from telegram import BotCommand, Update
 from telegram.error import TelegramError
@@ -21,7 +22,13 @@ import db
 import security
 from config import load_env
 from jobs.backup import backup_job
-from jobs.housekeeping import comment_digest_job, counter_refresh_job, daily_purge_job, hourly_job, housekeeping_job
+from jobs.housekeeping import (
+    comment_digest_job,
+    counter_refresh_job,
+    daily_purge_job,
+    hourly_job,
+    housekeeping_job,
+)
 from jobs.poster import poster_job, unpin_job
 from modules import MODULES
 from payments import handle_verify_webhook
@@ -32,7 +39,7 @@ VERSION = "1.0.0"
 
 
 class _RedactingFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+    def format(self, record: logging.LogRecord) -> str:
         return redact(super().format(record))
 
 

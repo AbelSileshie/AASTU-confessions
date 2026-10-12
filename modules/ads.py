@@ -18,12 +18,14 @@ from common import (
     alert_admins,
     dispatch_nav,
     exit_row,
+    fmt_ts,
     is_private_chat,
     kb,
     lang_of,
     nav_action,
     nav_keyboard,
     nav_regex,
+    post_link,
     send_home,
 )
 from config import cfg
@@ -88,6 +90,11 @@ def _own_ad(ad_id: int, user_id: int, *statuses: str) -> dict | None:
     if row and (not statuses or row["status"] in statuses):
         return dict(row)
     return None
+
+
+def _ad_reason_label(reason: str, lang: str) -> str:
+    namespace = "ads.payment_reject" if reason in ("wrong_receiver", "underpaid", "duplicate_reference") else "ads.reject_reason"
+    return t(lang, f"{namespace}.{reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -468,8 +475,24 @@ async def pay_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def _my_orders(user_id: int) -> list[dict]:
     return [dict(r) for r in db.q(
-        "SELECT a.id, a.status, a.price_etb, p.name FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id "
-        "JOIN packages p ON p.id=a.package_id WHERE adv.user_id=? ORDER BY a.id DESC LIMIT 8", (user_id,))]
+        "SELECT a.id, a.status, a.price_etb, p.name, p.posts, "
+        "(SELECT min(starts) FROM banners WHERE ad_id=a.id) banner_starts, "
+        "(SELECT max(ends) FROM banners WHERE ad_id=a.id) banner_ends "
+        "FROM ads a JOIN advertisers adv ON adv.id=a.advertiser_id JOIN packages p ON p.id=a.package_id "
+        "WHERE adv.user_id=? ORDER BY a.id DESC LIMIT 8", (user_id,))]
+
+
+def ad_status_label(ad: dict, lang: str, now: int | None = None) -> str:
+    status = ad["status"]
+    if ad.get("posts") == 0 and ad.get("banner_ends"):
+        now = db.now() if now is None else now
+        if ad["banner_starts"] > now:
+            status = "scheduled"
+        elif ad["banner_ends"] > now:
+            status = "live"
+        else:
+            status = "done"
+    return t(lang, f"ads.status.{status}")
 
 
 async def show_myads(message, user_id: int, lang: str) -> None:
@@ -477,7 +500,8 @@ async def show_myads(message, user_id: int, lang: str) -> None:
     if not rows:
         await message.reply_text(t(lang, "ads.none_yet"), reply_markup=nav_keyboard(lang, user_id))
         return
-    buttons = [[(f"#{r['id']} · {r['name']} · {r['status'].replace('_', ' ')}", "myad", f"show:{r['id']}")] for r in rows]
+    buttons = [[(f"#{r['id']} · {r['name']} · {ad_status_label(r, lang)}", "myad", f"show:{r['id']}")]
+               for r in rows]
     buttons.append([(t(lang, "menu.back"), "menu", "home")])
     await message.reply_text(t(lang, "ads.myads_title"), reply_markup=kb(buttons))
 
@@ -490,6 +514,9 @@ async def myads(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def myad_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """myad:show:<id> → order status with the right actions; myad:list → back."""
     q = update.callback_query
+    if not is_private_chat(update):
+        await q.answer()
+        return
     parsed = verify_cb(q.data)
     await q.answer()
     lang = lang_of(update)
@@ -502,15 +529,45 @@ async def myad_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not ad:
         await show_myads(q.message, uid, lang)
         return
-    pkg = db.one("SELECT name FROM packages WHERE id=?", (ad["package_id"],))
+    pkg = db.one("SELECT name, posts, pin_hours FROM packages WHERE id=?", (ad["package_id"],))
+    published = db.q("SELECT p.number, p.channel_msg_id, ap.pinned_until FROM ad_posts ap "
+                     "JOIN posts p ON p.number=ap.post_number WHERE ap.ad_id=? ORDER BY p.number", (ad["id"],))
+    scheduled = db.scalar("SELECT count(*) FROM outbox WHERE kind='ad' AND ref_id=?", (ad["id"],), 0) or 0
+    banners = db.q("SELECT starts, ends FROM banners WHERE ad_id=? ORDER BY starts", (ad["id"],))
+    banner_summary = ({"posts": pkg["posts"], "status": ad["status"], "banner_starts": min(b["starts"] for b in banners),
+                       "banner_ends": max(b["ends"] for b in banners)} if pkg and pkg["posts"] == 0 and banners else
+                      {"posts": pkg["posts"] if pkg else None, "status": ad["status"]})
+    status = ad_status_label(banner_summary, lang)
+    r = Rich().bold(t(lang, "ads.order_status", ad_id=ad["id"], name=pkg["name"] if pkg else "?",
+                       price=ad["price_etb"], status=status))
+    if ad["reject_reason"]:
+        r.nl().label(t(lang, "ads.reason_label"), _ad_reason_label(ad["reject_reason"], lang))
+    if pkg and pkg["posts"]:
+        r.nl().text(t(lang, "ads.posts_summary", published=len(published), scheduled=scheduled, total=pkg["posts"]))
+    for item in published:
+        if pkg and pkg["pin_hours"]:
+            pin_text = (t(lang, "ads.pin_until", date=fmt_ts(item["pinned_until"]))
+                        if item["pinned_until"] and item["pinned_until"] > db.now()
+                        else t(lang, "ads.not_pinned"))
+            r.nl().text("📌 " + pin_text)
+    if banners:
+        banner = banners[-1]
+        now = db.now()
+        banner_status = ("ads.banner_expired" if banner["ends"] <= now else
+                         "ads.banner_scheduled" if banner["starts"] > now else "ads.banner_active")
+        r.nl().text(t(lang, banner_status, date=fmt_ts(banner["ends"])))
     rows = []
     if ad["status"] == "awaiting_payment":
         rows.append([(t(lang, "ads.btn_pay_again"), "ad", f"paid:{ad['id']}"), (t(lang, "ads.btn_cancel_order"), "ad", f"cancel:{ad['id']}")])
     if ad["status"] in ("awaiting_payment", "verifying", "needs_review", "paid", "refund_due"):
         rows.append([(t(lang, "ads.btn_contact"), "adc", str(ad["id"]))])
+    for item in published:
+        url = post_link(context, item["channel_msg_id"])
+        if url:
+            rows.append([(t(lang, "ads.open_post", number=item["number"]), url)])
     rows.append([(t(lang, "menu.back"), "myad", "list")])
-    await q.message.reply_text(t(lang, "ads.order_status", ad_id=ad["id"], name=pkg["name"] if pkg else "?", price=ad["price_etb"],
-                                 status=ad["status"].replace("_", " ")), reply_markup=kb(rows))
+    text, entities = r.build()
+    await q.message.reply_text(text, entities=entities, reply_markup=kb(rows), disable_web_page_preview=True)
 
 
 # ---------------------------------------------------------------------------

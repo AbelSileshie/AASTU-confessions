@@ -10,7 +10,7 @@ import db
 from jobs import backup as backup_mod
 from jobs.housekeeping import expire_submissions, purge
 from jobs.poster import poster_job
-from tests.e2e_harness import ADMIN_GROUP, BACKUP, CHANNEL, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, BACKUP, CHANNEL
 
 TEST_AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
 

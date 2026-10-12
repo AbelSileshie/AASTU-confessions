@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 STRINGS_DIR = Path(__file__).parent / "strings"
@@ -10,7 +10,7 @@ DEFAULT_LANG = "en"
 SUPPORTED = ("en", "am")
 
 
-@lru_cache(maxsize=None)
+@cache
 def _load(lang: str) -> dict[str, str]:
     path = STRINGS_DIR / f"{lang}.json"
     if not path.exists():

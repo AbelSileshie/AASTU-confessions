@@ -14,9 +14,27 @@ from telegram.ext import (
 )
 
 import db
+from common import (
+    alert_admins,
+    dispatch_nav,
+    ensure_user,
+    exit_row,
+    is_private_chat,
+    kb,
+    lang_of,
+    nav_action,
+    nav_keyboard,
+    nav_regex,
+    notify_author,
+    parse_int,
+    send_home,
+    show_rules,
+    staff_name,
+    staff_reply,
+    user_lang,
+)
 from config import cfg
 from fmt import Rich, card
-from common import alert_admins, dispatch_nav, show_rules, staff_name, staff_reply, ensure_user, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, notify_author, parse_int, send_home, user_lang
 from i18n import t
 from security import author_hash, require, verify_cb
 from textfilter import strip_invisible
@@ -131,9 +149,8 @@ async def request_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await send_home(update.callback_query.message, lang, t(lang, "nav.cancelled"))
         return ConversationHandler.END
-    if update.message:
-        if not await dispatch_nav(update.message, context, lang, nav_action(update.message.text)):
-            await send_home(update.message, lang, t(lang, "nav.cancelled"))
+    if update.message and not await dispatch_nav(update.message, context, lang, nav_action(update.message.text)):
+        await send_home(update.message, lang, t(lang, "nav.cancelled"))
     return ConversationHandler.END
 
 
