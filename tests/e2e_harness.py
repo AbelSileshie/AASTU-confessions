@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -43,8 +44,9 @@ class FakeVerify:
 
     # ---- canned responders ----
     @staticmethod
-    def result(verified=True, amount=800, matched=True, ambiguous=False, confirmed_before=False, ts="2026-10-03T10:00:00.000Z",
+    def result(verified=True, amount=800, matched=True, ambiguous=False, confirmed_before=False, ts=None,
                sender="Abebe Bikila", receiver="Kuru Labs", bank="telebirr", ref="ABC123XYZ"):
+        ts = ts or datetime.fromtimestamp(db.now(), timezone.utc).isoformat()
         return {
             "bank": bank, "status": "success" if verified else "failed", "verified": verified, "amount": amount, "currency": "ETB",
             "senderName": sender, "receiverName": receiver, "receiverAccount": "09****0897", "referenceNumber": ref, "timestamp": ts,

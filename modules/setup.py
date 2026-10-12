@@ -10,12 +10,18 @@ import dataclasses
 
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, ChatMemberHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    ContextTypes,
+)
 
 import db
 from common import TOPICS, kb
 from config import cfg, invalidate
 from fmt import Rich
+from jobs.backup import backup_configuration_issue
 from security import require, verify_cb
 
 ROLE_KEYS = {"channel": "chat_channel", "admin": "chat_admin_group", "backup": "chat_backup"}
@@ -109,7 +115,7 @@ async def setup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif parts[0] == "ignore":
         await q.message.edit_text("Okay, ignored.", reply_markup=None)
     elif parts[0] == "check":
-        text, ents, ok = await checklist(context)
+        text, ents, _ok = await checklist(context)
         try:
             await q.message.edit_text(text, entities=ents, reply_markup=kb([[("🔄 Re-check", "setup", "check"), ("⬅️ Admin", "hub", "home")]]))
         except TelegramError:
@@ -150,7 +156,13 @@ async def checklist(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, list, bool
     items.append((staff > 0, "Moderators", f"{staff} active" if staff else "none — ⚙️ Admin → Staff → Invite"))
     items.append((bool(cfg("rules_text", "")), "Rules text", "set" if cfg("rules_text", "") else "empty"))
     ok, note = await _bot_rights(context, env.backup_channel_id)
-    items.append((ok and bool(env.age_recipient), "Backups", note if not ok else ("ready" if env.age_recipient else "AGE_RECIPIENT missing in .env")))
+    backup_issues = []
+    if not ok:
+        backup_issues.append(note)
+    recipient_issue = backup_configuration_issue(env.age_recipient)
+    if recipient_issue:
+        backup_issues.append(recipient_issue)
+    items.append((not backup_issues, "Backups", ", ".join(backup_issues) or "ready"))
     if cfg("ads_enabled", True):
         payouts = db.scalar("SELECT count(*) FROM payout_accounts WHERE enabled=1", default=0)
         items.append((payouts > 0, "Payout accounts", f"{payouts}" if payouts else "none — ⚙️ Admin → Payout accounts"))

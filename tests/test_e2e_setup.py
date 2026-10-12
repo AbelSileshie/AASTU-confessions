@@ -12,7 +12,7 @@ from telegram import Update
 
 import db
 from modules.setup import apply_overrides, checklist
-from tests.e2e_harness import ADMIN_GROUP, CHANNEL, OWNER, h  # noqa: F401
+from tests.e2e_harness import ADMIN_GROUP, BACKUP, CHANNEL, OWNER, h  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -86,6 +86,14 @@ async def test_checklist_reports_red_and_green(h):
     text, ents, ok = await checklist(h.context())
     assert "Payout" not in text  # ads off → not required
     assert "✅ Moderators" in text or "Moderators — 1 active" in text
+
+
+async def test_checklist_rejects_placeholder_backup_recipient(h):
+    recipient = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7ruspxc8t5c"
+    env = h.env.__class__(**{**h.env.__dict__, "backup_channel_id": BACKUP, "age_recipient": recipient})
+    h.app.bot_data["env"] = env
+    text, _, _ = await checklist(h.context())
+    assert "❌ Backups" in text and "AGE_RECIPIENT" in text
 
 
 async def test_startup_dm_contains_checklist_when_not_ready(h):

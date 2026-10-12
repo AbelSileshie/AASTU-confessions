@@ -1,7 +1,6 @@
 """aiohttp server: Telegram webhook, Verify.et webhook, health."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -85,22 +84,26 @@ async def verify_webhook(request: web.Request) -> web.Response:
         payload = json.loads(raw)
     except ValueError:
         return web.Response(status=400)
+    if not isinstance(payload, dict):
+        return web.Response(status=400)
     delivery_id = request.headers.get("X-Webhook-Delivery-Id") or f"{payload.get('requestId')}:{payload.get('event')}"
-    try:
-        db.execute("INSERT INTO webhook_events(delivery_id, received_at) VALUES (?,?)", (delivery_id[:128], db.now()))
-    except db.sqlite3.IntegrityError:
-        return web.Response(status=204)  # duplicate delivery
+    delivery_id = delivery_id[:128]
+    if db.one("SELECT 1 FROM webhook_events WHERE delivery_id=?", (delivery_id,)):
+        return web.Response(status=204)
     handler = request.app.get("verify_handler")
     if handler:
-        asyncio.get_running_loop().create_task(_safe(handler, payload, request.app["application"]))
-    return web.Response(status=204)
-
-
-async def _safe(handler, payload, application) -> None:
+        try:
+            handled = await handler(payload, request.app["application"])
+        except Exception:
+            log.exception("verify webhook processing failed")
+            return web.Response(status=500)
+        if handled is False:
+            return web.Response(status=503)
     try:
-        await handler(payload, application)
-    except Exception:  # noqa: BLE001
-        log.exception("verify webhook processing failed")
+        db.execute("INSERT INTO webhook_events(delivery_id, received_at) VALUES (?,?)", (delivery_id, db.now()))
+    except db.sqlite3.IntegrityError:
+        pass
+    return web.Response(status=204)
 
 
 async def healthz(request: web.Request) -> web.Response:

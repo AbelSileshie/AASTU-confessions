@@ -12,6 +12,8 @@ from jobs.housekeeping import expire_submissions, purge
 from jobs.poster import poster_job
 from tests.e2e_harness import ADMIN_GROUP, BACKUP, CHANNEL, h  # noqa: F401
 
+TEST_AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
+
 
 
 @pytest.fixture
@@ -28,7 +30,7 @@ def fake_age(tmp_path, monkeypatch):
 
 async def test_backup_uploads_encrypted_file_and_prunes(h, fake_age, monkeypatch):
     monkeypatch.setattr(backup_mod, "KEEP_LAST", 2)
-    env = h.env.__class__(**{**h.env.__dict__, "age_recipient": "age1test"})
+    env = h.env.__class__(**{**h.env.__dict__, "backup_channel_id": BACKUP, "age_recipient": TEST_AGE_RECIPIENT})
     h.app.bot_data["env"] = env
     for _ in range(3):
         await h.run_job(backup_mod.backup_job)
@@ -39,11 +41,45 @@ async def test_backup_uploads_encrypted_file_and_prunes(h, fake_age, monkeypatch
 
 
 async def test_backup_failure_alerts_admins(h, monkeypatch):
-    env = h.env.__class__(**{**h.env.__dict__, "age_recipient": "age1test"})
+    env = h.env.__class__(**{**h.env.__dict__, "backup_channel_id": BACKUP, "age_recipient": TEST_AGE_RECIPIENT})
     h.app.bot_data["env"] = env
     monkeypatch.setenv("PATH", "/nonexistent")
     await h.run_job(backup_mod.backup_job)
     assert "Backup failed" in h.last(ADMIN_GROUP).text
+
+
+async def test_backup_rejects_placeholder_recipient(h):
+    env = h.env.__class__(**{**h.env.__dict__, "backup_channel_id": BACKUP, "age_recipient": "age1"})
+    h.app.bot_data["env"] = env
+    await h.run_job(backup_mod.backup_job)
+    assert h.tg.sent_to(BACKUP) == []
+    assert "AGE_RECIPIENT" in h.last(ADMIN_GROUP).text
+
+
+async def test_backup_rejects_bad_recipient_checksum(h, fake_age):
+    env = h.env.__class__(**{**h.env.__dict__, "backup_channel_id": BACKUP, "age_recipient": "age1" + "q" * 58})
+    h.app.bot_data["env"] = env
+    await h.run_job(backup_mod.backup_job)
+    assert h.tg.sent_to(BACKUP) == []
+    assert "AGE_RECIPIENT" in h.last(ADMIN_GROUP).text
+
+
+async def test_backup_rejects_noncanonical_recipient_padding(h, fake_age):
+    recipient = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7ruspxc8t5c"
+    env = h.env.__class__(**{**h.env.__dict__, "backup_channel_id": BACKUP, "age_recipient": recipient})
+    h.app.bot_data["env"] = env
+    await h.run_job(backup_mod.backup_job)
+    assert h.tg.sent_to(BACKUP) == []
+    assert "AGE_RECIPIENT" in h.last(ADMIN_GROUP).text
+
+
+async def test_backup_reports_missing_age_executable(h, monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    env = h.env.__class__(**{**h.env.__dict__, "backup_channel_id": BACKUP, "age_recipient": TEST_AGE_RECIPIENT})
+    h.app.bot_data["env"] = env
+    await h.run_job(backup_mod.backup_job)
+    assert h.tg.sent_to(BACKUP) == []
+    assert "age executable" in h.last(ADMIN_GROUP).text
 
 
 async def test_backup_skipped_when_unconfigured(h):

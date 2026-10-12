@@ -1,7 +1,6 @@
 """/advertise: package → text → photo → button → preview → order → pay → reference."""
 from __future__ import annotations
 
-
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -14,11 +13,31 @@ from telegram.ext import (
 )
 
 import db
-from common import advertiser_name, alert_admins, dispatch_nav, exit_row, is_private_chat, kb, lang_of, nav_action, nav_keyboard, nav_regex, send_home
+from common import (
+    advertiser_name,
+    alert_admins,
+    dispatch_nav,
+    exit_row,
+    is_private_chat,
+    kb,
+    lang_of,
+    nav_action,
+    nav_keyboard,
+    nav_regex,
+    send_home,
+)
 from config import cfg
 from fmt import Rich, card
 from i18n import t
-from payments import BANK_FIELDS, clean_extra, clean_reference, outcome_message, record_payment, verify_payment
+from payments import (
+    BANK_FIELDS,
+    clean_extra,
+    clean_reference,
+    outcome_message,
+    record_payment,
+    required_extra,
+    verify_payment,
+)
 from security import verify_cb
 from textfilter import check_text, strip_invisible, valid_ad_url
 
@@ -356,7 +375,7 @@ async def got_reference(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(t(lang, "ads.bad_reference"), reply_markup=kb([[(t(lang, "menu.cancel"), "ads", "paycancel")]]))
         return REFERENCE
     pay["reference"] = ref
-    spec = BANK_FIELDS[pay["bank"]]["extra"]
+    spec = required_extra(pay["bank"], ref)
     if spec:
         key = "ads.ask_phone" if spec[0] == "phone" else "ads.ask_suffix"
         await update.message.reply_text(t(lang, key, n=spec[1]), reply_markup=kb([[(t(lang, "menu.cancel"), "ads", "paycancel")]]))

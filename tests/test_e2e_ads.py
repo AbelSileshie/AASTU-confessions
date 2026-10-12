@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 import db
+import payments
 from jobs.housekeeping import expire_orders
 from jobs.poster import poster_job, unpin_job
-from payments import handle_verify_webhook, poll_job
+from payments import VerifyOutcome, apply_result, handle_verify_webhook, poll_job
 from tests.e2e_harness import ADMIN_GROUP, CHANNEL, FakeVerify, OWNER, h  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -83,7 +85,7 @@ async def test_successful_telebirr_payment_end_to_end(h):
     assert req["body"] == {"bank": "telebirr", "transactionNumber": "ABC123XYZ", "settlementAccount": "0939080897"}
     assert req["headers"]["idempotency-key"].startswith(f"ad-{ad_id}-")
     assert req["headers"]["x-api-key"] == "VERIFY_BANK_ET_test"
-    assert req["headers"]["x-webhook-url"] == "https://confess.test/webhooks/verify"
+    assert "x-webhook-url" not in req["headers"]
     assert req["params"]["waitMs"] == "5000"
     assert "confirmed" in h.last(ADV).text.lower()
     p = dict(db.one("SELECT * FROM payments"))
@@ -197,6 +199,16 @@ async def test_cbe_requires_suffix_and_sends_it(h):
                                              "settlementAccount": "1000303997441"}
 
 
+async def test_cbe_receipt_id_does_not_prompt_for_suffix(h):
+    h.add_payout(bank="cbe", account="1000303997441", holder="Kuru Labs")
+    await _order(h)
+    await h.press(ADV, "I have paid")
+    await h.press(ADV, "CBE")
+    await h.say(ADV, "CBE26RCPT99")
+    assert h.verify.requests[-1]["body"] == {"bank": "cbe", "referenceNumber": "CBE26RCPT99",
+                                             "settlementAccount": "1000303997441"}
+
+
 async def test_reference_extracted_from_pasted_sms(h):
     h.add_payout()
     await _order(h)
@@ -215,10 +227,11 @@ async def test_queued_then_webhook_completes(h):
     assert db.scalar("SELECT status FROM payments") == "queued"
     assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "verifying"
     # webhook (no settlementAccountMatch in webhook payload → receiverName fallback)
-    payload = {"event": "verification.completed", "requestId": "req-q", "timestamp": "2026-10-03T10:00:02Z",
+    current_timestamp = datetime.fromtimestamp(db.now(), timezone.utc).isoformat()
+    payload = {"event": "verification.completed", "requestId": "req-q", "timestamp": current_timestamp,
                "data": {"processingStatus": "completed", "status": "success", "verified": True, "bank": "telebirr",
                         "amount": "800", "currency": "ETB", "senderName": "Abebe", "receiverName": "KURU LABS",
-                        "referenceNumber": "ABC123XYZ", "completedAt": "2026-10-03T10:00:02Z"}}
+                        "referenceNumber": "ABC123XYZ", "completedAt": current_timestamp}}
     await handle_verify_webhook(payload, h.app)
     assert db.scalar("SELECT status FROM payments") == "verified"
     assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "paid"
@@ -250,6 +263,109 @@ async def test_queued_then_poll_completes(h):
     pid = db.scalar("SELECT id FROM payments")
     await h.run_job(poll_job, {"payment_id": pid, "attempt": 0})
     assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "paid"
+
+
+@pytest.mark.parametrize("status_data", [
+    {"status": "success", "verified": True},
+    {"status": "success", "verified": True, "amount": 800, "settlementAccountMatch": {}},
+    {"status": "success", "amount": 800},
+])
+async def test_sparse_completed_poll_waits_for_full_webhook(h, status_data):
+    h.add_payout()
+    h.verify.responder = FakeVerify.queued
+    ad_id = await _order(h)
+    await _pay(h)
+    pid = db.scalar("SELECT id FROM payments")
+    current_timestamp = datetime.fromtimestamp(db.now(), timezone.utc).isoformat()
+    h.verify.status_payload = {"success": True, "data": {"requestId": "req-q", "processingStatus": "completed",
+                                                         **status_data, "completedAt": current_timestamp}}
+    await h.run_job(poll_job, {"payment_id": pid, "attempt": 0})
+    assert db.scalar("SELECT status FROM payments WHERE id=?", (pid,)) == "queued"
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "verifying"
+
+    payload = {"event": "verification.completed", "requestId": "req-q", "data": FakeVerify.result()}
+    await handle_verify_webhook(payload, h.app)
+    assert db.scalar("SELECT status FROM payments WHERE id=?", (pid,)) == "verified"
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "paid"
+
+
+async def test_webhook_can_complete_after_poll_timeout(h):
+    h.add_payout()
+    h.verify.responder = FakeVerify.queued
+    ad_id = await _order(h)
+    await _pay(h)
+    pid = db.scalar("SELECT id FROM payments")
+    current_timestamp = datetime.fromtimestamp(db.now(), timezone.utc).isoformat()
+    h.verify.status_payload = {"success": True, "data": {"requestId": "req-q", "processingStatus": "completed",
+                                                         "status": "success", "verified": True,
+                                                         "completedAt": current_timestamp}}
+    await h.run_job(poll_job, {"payment_id": pid, "attempt": 5})
+    assert db.scalar("SELECT reason FROM payments WHERE id=?", (pid,)) == "poll_timeout"
+    payload = {"event": "verification.completed", "requestId": "req-q", "data": FakeVerify.result()}
+    await handle_verify_webhook(payload, h.app)
+    assert db.scalar("SELECT status FROM payments WHERE id=?", (pid,)) == "verified"
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "paid"
+
+
+async def test_poll_timeout_does_not_overwrite_concurrent_webhook(h, monkeypatch):
+    h.add_payout()
+    h.verify.responder = FakeVerify.queued
+    ad_id = await _order(h)
+    await _pay(h)
+    pid = db.scalar("SELECT id FROM payments")
+    payload = {"event": "verification.completed", "requestId": "req-q", "data": FakeVerify.result()}
+
+    class RacingClient:
+        async def status(self, request_id):
+            await handle_verify_webhook(payload, h.app)
+            return VerifyOutcome("queued", request_id=request_id)
+
+    monkeypatch.setattr("payments._client", lambda context: RacingClient())
+    await h.run_job(poll_job, {"payment_id": pid, "attempt": 5})
+    assert db.scalar("SELECT status FROM payments WHERE id=?", (pid,)) == "verified"
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "paid"
+
+
+async def test_payment_and_audit_roll_back_together(h, monkeypatch):
+    h.add_payout()
+    h.verify.responder = FakeVerify.queued
+    ad_id = await _order(h)
+    await _pay(h)
+    pid = db.scalar("SELECT id FROM payments")
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(db, "audit", fail_audit)
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        apply_result(pid, FakeVerify.result(), "result")
+    assert db.scalar("SELECT status FROM payments WHERE id=?", (pid,)) == "queued"
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "verifying"
+
+
+async def test_payment_result_rechecks_state_inside_transaction(h, monkeypatch):
+    h.add_payout()
+    h.verify.responder = FakeVerify.queued
+    ad_id = await _order(h)
+    await _pay(h)
+    pid = db.scalar("SELECT id FROM payments")
+    original_evaluate = payments.evaluate
+    interleaved = False
+
+    def interleaving_evaluate(data, *args, **kwargs):
+        nonlocal interleaved
+        result = original_evaluate(data, *args, **kwargs)
+        if not interleaved:
+            interleaved = True
+            payments.apply_result(pid, FakeVerify.result(matched=False), "interleaved")
+        return result
+
+    monkeypatch.setattr(payments, "evaluate", interleaving_evaluate)
+    result = payments.apply_result(pid, FakeVerify.result(), "outer")
+    assert result.reason == "already_applied"
+    assert db.scalar("SELECT status FROM payments WHERE id=?", (pid,)) == "failed"
+    assert db.scalar("SELECT reason FROM payments WHERE id=?", (pid,)) == "receiver_mismatch"
+    assert db.scalar("SELECT status FROM ads WHERE id=?", (ad_id,)) == "needs_review"
 
 
 async def test_no_credits_falls_back_to_manual(h):

@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import shutil
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
@@ -17,6 +19,41 @@ from common import alert_admins
 
 log = logging.getLogger(__name__)
 KEEP_LAST = 30
+_AGE_RECIPIENT_RE = re.compile(r"age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}\Z")
+_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_BECH32_GENERATORS = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+
+
+def _bech32_polymod(values: list[int]) -> int:
+    checksum = 1
+    for value in values:
+        top_bits = checksum >> 25
+        checksum = ((checksum & 0x1FFFFFF) << 5) ^ value
+        for index, generator in enumerate(_BECH32_GENERATORS):
+            if (top_bits >> index) & 1:
+                checksum ^= generator
+    return checksum
+
+
+def _valid_age_recipient(recipient: str) -> bool:
+    if not _AGE_RECIPIENT_RE.fullmatch(recipient):
+        return False
+    hrp = [ord(char) >> 5 for char in "age"] + [0] + [ord(char) & 31 for char in "age"]
+    data = [_BECH32_CHARSET.index(char) for char in recipient[4:]]
+    key_data = data[:-6]
+    if len(key_data) != 52 or key_data[-1] & 0x0F:
+        return False
+    return _bech32_polymod(hrp + data) == 1
+
+
+def backup_configuration_issue(recipient: str) -> str | None:
+    if not recipient:
+        return "AGE_RECIPIENT is missing"
+    if not _valid_age_recipient(recipient):
+        return "AGE_RECIPIENT is not a valid age public recipient"
+    if shutil.which("age") is None:
+        return "age executable is not installed"
+    return None
 
 
 def _sqlite_backup(src_path: str, dest_path: str) -> None:
@@ -54,15 +91,23 @@ async def make_backup(db_path: str, recipient: str, workdir: str) -> str:
 
 async def backup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     env = context.bot_data["env"]
-    if not env.backup_channel_id or not env.age_recipient:
+    if not env.backup_channel_id:
         log.info("backup skipped: not configured")
+        return
+    issue = backup_configuration_issue(env.age_recipient)
+    if issue:
+        log.error("backup unavailable: %s", issue)
+        await alert_admins(context, f"❗ Backup failed: {issue}")
         return
     with tempfile.TemporaryDirectory(prefix="confessbak-") as tmp:
         try:
             path = await make_backup(env.db_path, env.age_recipient, tmp)
-            with open(path, "rb") as fh:
+            fh = await asyncio.to_thread(open, path, "rb")
+            try:
                 msg = await context.bot.send_document(env.backup_channel_id, fh, filename=os.path.basename(path),
                                                       caption=f"backup {os.path.basename(path)} · {os.path.getsize(path)//1024} KB")
+            finally:
+                await asyncio.to_thread(fh.close)
             db.execute("INSERT INTO meta(k, v) VALUES ('last_backup_at', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                        (str(db.now()),))
             await _prune(context, env.backup_channel_id, msg.message_id)

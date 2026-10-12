@@ -54,12 +54,20 @@ class TestSignaturePure:
 @pytest.fixture
 async def client(h):
     received = []
+    handler_override = {"callback": None}
 
     async def handler(payload, application):
+        result = None
+        if handler_override["callback"]:
+            result = await handler_override["callback"](payload, application)
+            if result is False:
+                return False
         received.append(payload)
+        return result
 
     app = build_app(h.env, h.app, verify_handler=handler)
     app["received"] = received
+    app["handler_override"] = handler_override
     async with TestClient(TestServer(app)) as c:
         yield c
 
@@ -128,3 +136,47 @@ async def test_verify_webhook_test_ping_and_idempotency(client):
     import asyncio
     await asyncio.sleep(0.05)
     assert len(client.server.app["received"]) == 1
+
+
+async def test_verify_webhook_failure_is_retryable(client):
+    calls = 0
+
+    async def flaky_handler(payload, application):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary processing failure")
+
+    client.server.app["handler_override"]["callback"] = flaky_handler
+    body = json.dumps({"event": "verification.completed", "requestId": "retry-me", "data": {}}).encode()
+    ts = str(time.time())
+    hdr = {"X-Webhook-Timestamp": ts, "X-Webhook-Signature": _sig("whsec_test", ts, body),
+           "X-Webhook-Delivery-Id": "retry-delivery"}
+
+    assert (await client.post("/webhooks/verify", data=body, headers=hdr)).status == 500
+    assert db.scalar("SELECT count(*) FROM webhook_events WHERE delivery_id='retry-delivery'") == 0
+    assert (await client.post("/webhooks/verify", data=body, headers=hdr)).status == 204
+    assert db.scalar("SELECT count(*) FROM webhook_events WHERE delivery_id='retry-delivery'") == 1
+    assert (await client.post("/webhooks/verify", data=body, headers=hdr)).status == 204
+    assert calls == 2
+
+
+async def test_unmatched_verify_webhook_remains_retryable(client):
+    calls = 0
+
+    async def delayed_match(payload, application):
+        nonlocal calls
+        calls += 1
+        return calls > 1
+
+    client.server.app["handler_override"]["callback"] = delayed_match
+    body = json.dumps({"event": "verification.completed", "requestId": "not-stored-yet", "data": {}}).encode()
+    ts = str(time.time())
+    hdr = {"X-Webhook-Timestamp": ts, "X-Webhook-Signature": _sig("whsec_test", ts, body),
+           "X-Webhook-Delivery-Id": "early-delivery"}
+
+    assert (await client.post("/webhooks/verify", data=body, headers=hdr)).status == 503
+    assert db.scalar("SELECT count(*) FROM webhook_events WHERE delivery_id='early-delivery'") == 0
+    assert (await client.post("/webhooks/verify", data=body, headers=hdr)).status == 204
+    assert db.scalar("SELECT count(*) FROM webhook_events WHERE delivery_id='early-delivery'") == 1
+    assert calls == 2

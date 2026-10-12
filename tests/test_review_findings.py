@@ -53,7 +53,7 @@ async def test_telegram_webhook_rejects_everything_without_secret(h):
 
 # S3 — receiver name matching must not accept empty/normalised-away names
 class TestReceiverName:
-    base = {"verified": True, "amount": 800, "timestamp": "2026-10-03T10:00:00Z"}
+    base = {"verified": True, "amount": 800}
 
     def test_amharic_holder_mismatch_is_review(self):
         data = {**self.base, "receiverName": "ኩሩ ላብስ"}

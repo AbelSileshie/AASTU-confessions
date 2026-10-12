@@ -62,11 +62,19 @@ def clean_extra(bank: str, raw: str) -> str | None:
     return digits if len(digits) == n else None
 
 
+def required_extra(bank: str, reference: str) -> tuple[str, int] | None:
+    spec = BANK_FIELDS[bank]["extra"]
+    if bank == "cbe" and not reference.upper().startswith("FT"):
+        return None
+    return spec
+
+
 def build_request(bank: str, reference: str, extra: str, settlement_account: str) -> dict:
     spec = BANK_FIELDS[bank]
     body = {"bank": bank, spec["ref"]: reference, "settlementAccount": settlement_account}
-    if spec["extra"]:
-        body[spec["extra"][0]] = extra
+    extra_spec = required_extra(bank, reference)
+    if extra_spec:
+        body[extra_spec[0]] = extra
     return body
 
 
@@ -88,10 +96,8 @@ class VerifyClient:
         self.api_key = api_key
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
-    async def submit(self, body: dict, idem_key: str, webhook_url: str | None = None) -> VerifyOutcome:
+    async def submit(self, body: dict, idem_key: str) -> VerifyOutcome:
         headers = {"x-api-key": self.api_key, "Idempotency-Key": idem_key, "Content-Type": "application/json"}
-        if webhook_url:
-            headers["X-Webhook-Url"] = webhook_url
         try:
             r = await self._client.post(f"{self.base_url}/api/verify", params={"waitMs": 5000}, json=body, headers=headers)
         except httpx.HTTPError as exc:
@@ -153,7 +159,7 @@ class Acceptance:
 
 def _parse_amount(v: Any) -> int | None:
     try:
-        return int(round(float(str(v).replace(",", ""))))
+        return round(float(str(v).replace(",", "")))
     except (TypeError, ValueError):
         return None
 
@@ -245,13 +251,20 @@ def apply_result(payment_id: int, data: dict, raw: str) -> Acceptance:
     p = db.one("SELECT p.*, a.price_etb, a.payout_account_id FROM payments p JOIN ads a ON a.id=p.ad_id WHERE p.id=?", (payment_id,))
     if not p:
         return Acceptance("failed", "unknown_payment")
-    if p["status"] not in ("submitted", "queued"):  # webhook and poll both arrived; first one wins
+    late_poll_result = p["status"] == "failed" and p["reason"] in ("poll_timeout", "verify_unavailable")
+    if p["status"] not in ("submitted", "queued") and not late_poll_result:
         return Acceptance("failed", "already_applied")
     holder = db.scalar("SELECT holder FROM payout_accounts WHERE id=?", (p["payout_account_id"],), "") or ""
     acc = evaluate(data, p["price_etb"], db.now(), cfg("payment_max_age_days", 7), holder,
                    reference_used(p["bank"], p["reference"], payment_id))
     now = db.now()
     with db.tx():
+        current = db.one("SELECT status, reason FROM payments WHERE id=?", (payment_id,))
+        if not current:
+            return Acceptance("failed", "unknown_payment")
+        late_poll_result = current["status"] == "failed" and current["reason"] in ("poll_timeout", "verify_unavailable")
+        if current["status"] not in ("submitted", "queued") and not late_poll_result:
+            return Acceptance("failed", "already_applied")
         try:
             db.execute(
                 "UPDATE payments SET status=?, amount=?, sender_name=?, receiver_match=?, confirmed_before=?, reason=?, raw=?, completed_at=? WHERE id=?",
@@ -267,7 +280,7 @@ def apply_result(payment_id: int, data: dict, raw: str) -> Acceptance:
                      "duplicate": "awaiting_payment", "needs_review": "needs_review"}[acc.status]
         db.execute("UPDATE ads SET status=?, paid_at=CASE WHEN ?='paid' THEN ? ELSE paid_at END WHERE id=?",
                    (ad_status, ad_status, now, p["ad_id"]))
-    db.audit(0, f"payment_{acc.status}", f"ad:{p['ad_id']}", acc.reason)
+        db.audit(0, f"payment_{acc.status}", f"ad:{p['ad_id']}", acc.reason)
     return acc
 
 
@@ -277,9 +290,7 @@ async def verify_payment(context, payment_id: int, schedule_retry: bool = True) 
     p = db.one("SELECT p.*, a.payout_account_id FROM payments p JOIN ads a ON a.id=p.ad_id WHERE p.id=?", (payment_id,))
     account = db.one("SELECT account FROM payout_accounts WHERE id=?", (p["payout_account_id"],))
     body = build_request(p["bank"], p["reference"], p["extra"] or "", account["account"] if account else "")
-    env = context.bot_data["env"]
-    webhook = f"{env.public_url}/webhooks/verify" if env.public_url else None
-    outcome = await _client(context).submit(body, p["idem_key"], webhook)
+    outcome = await _client(context).submit(body, p["idem_key"])
     if outcome.kind == "completed":
         return "completed", apply_result(payment_id, outcome.data or {}, outcome.raw)
     if outcome.kind == "queued":
@@ -325,18 +336,33 @@ async def poll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     outcome = await _client(context).status(p["request_id"])
     if outcome.kind == "completed":
-        acc = apply_result(d["payment_id"], outcome.data or {}, outcome.raw)
-        await notify_outcome(context, d["payment_id"], acc)
-    elif d["attempt"] < 5:
+        data = outcome.data or {}
+        if _has_poll_result(data):
+            acc = apply_result(d["payment_id"], data, outcome.raw)
+            await notify_outcome(context, d["payment_id"], acc)
+            return
+    if d["attempt"] < 5:
         context.job_queue.run_once(poll_job, 60, data={**d, "attempt": d["attempt"] + 1})
     else:
         await _give_up(context, d["payment_id"], "poll_timeout")
 
 
+def _has_poll_result(data: dict) -> bool:
+    if data.get("verified") is False:
+        return True
+    if data.get("verified") is not True or data.get("amount") is None:
+        return False
+    return bool(data.get("settlementAccountMatch")) or bool(str(data.get("receiverName") or "").strip())
+
+
 async def _give_up(context, payment_id: int, reason: str) -> None:
-    ad_id = db.scalar("SELECT ad_id FROM payments WHERE id=?", (payment_id,))
-    db.execute("UPDATE payments SET status='failed', reason=? WHERE id=?", (reason, payment_id))
-    db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (ad_id,))
+    with db.tx():
+        payment = db.one("SELECT ad_id FROM payments WHERE id=? AND status='queued'", (payment_id,))
+        if not payment:
+            return
+        ad_id = payment["ad_id"]
+        db.execute("UPDATE payments SET status='failed', reason=? WHERE id=? AND status='queued'", (reason, payment_id))
+        db.execute("UPDATE ads SET status='needs_review' WHERE id=?", (ad_id,))
     await alert_admins(context, f"❗ Payment {payment_id} for ad {ad_id} could not be verified ({reason}); manual review.", kind="ads")
 
 
@@ -372,16 +398,19 @@ def outcome_message(lang: str, acc: Acceptance, price: int, attempts_left: int |
 # Webhook entry (called from web/server.py)
 # ---------------------------------------------------------------------------
 
-async def handle_verify_webhook(payload: dict, application: Application) -> None:
+async def handle_verify_webhook(payload: dict, application: Application) -> bool:
     request_id = payload.get("requestId")
     if not request_id:
-        return
-    p = db.one("SELECT id, status FROM payments WHERE request_id=? AND status='queued'", (request_id,))
+        return True
+    p = db.one("SELECT id, status, reason FROM payments WHERE request_id=?", (request_id,))
     if not p:
-        return
+        return False
+    late_poll_result = p["status"] == "failed" and p["reason"] in ("poll_timeout", "verify_unavailable")
+    if p["status"] != "queued" and not late_poll_result:
+        return True
     data = payload.get("data") or {}
     if data.get("processingStatus") not in ("completed", None):
-        return
+        return True
     acc = apply_result(p["id"], data, json.dumps(payload)[:4000])
 
     class _Ctx:  # minimal context shim for notify helpers
@@ -389,6 +418,10 @@ async def handle_verify_webhook(payload: dict, application: Application) -> None
         bot_data = application.bot_data
         job_queue = application.job_queue
 
-    await notify_outcome(_Ctx(), p["id"], acc)
+    try:
+        await notify_outcome(_Ctx(), p["id"], acc)
+    except Exception:
+        log.exception("verify payment notification failed")
+    return True
 
 
